@@ -75,11 +75,36 @@ export interface OperatorConfig {
   myBetsPath: string;
   /** `{query}` is replaced with the URL-encoded search term. */
   searchPath: string;
+  /**
+   * Where a sport's card lives. `{sport}` is replaced with the sport name.
+   * This is the page the Execution agent reads to learn what is on offer, and
+   * it is configuration precisely so adding a bookmaker stays configuration.
+   */
+  sportsPath: string;
   usernameLabel: string;
   passwordLabel: string;
   loginButtonLabel: string;
   /** Regex source matched against page text to confirm an authenticated session. */
   loggedInMarker: string;
+}
+
+/**
+ * Where the day's fixtures and the markets on offer are read from.
+ *
+ * Separate from the account that takes the bets, because they are separate
+ * decisions. A site can be a good catalogue — a full card, every market, prices
+ * beside them — without being the book you stake with, and pointing the system
+ * at one for discovery must never imply permission to place money there.
+ *
+ * Unset, it falls back to the staking operator, which is the ordinary case.
+ */
+export interface FixtureSourceConfig {
+  name: string;
+  baseUrl: string;
+  /** `{sport}` is replaced with the sport name. */
+  sportsPath: string;
+  /** True when this is the staking operator rather than a separate catalogue. */
+  isOperator: boolean;
 }
 
 export interface AppConfig {
@@ -89,10 +114,17 @@ export interface AppConfig {
   sheets: SheetsConfig | null;
   telegram: TelegramConfig | null;
   operator: OperatorConfig;
+  fixtureSource: FixtureSourceConfig;
   dashboardToken: string | null;
-  /** Cap on research depth per cycle, to bound token spend. */
+  /** Cap on research depth per pass, to bound token spend. */
   maxResearchMatches: number;
   maxShortlist: number;
+  /**
+   * How many times a cycle re-sweeps over fixtures it has not yet assessed
+   * before accepting that today has nothing. One pass over a handful of matches
+   * finding nothing says something about those matches, not about the day.
+   */
+  maxCyclePasses: number;
 }
 
 export class ConfigError extends Error {
@@ -196,6 +228,27 @@ function readTelegram(): TelegramConfig | null {
   };
 }
 
+/**
+ * The catalogue, defaulting to the staking operator when none is configured.
+ */
+function readFixtureSource(): FixtureSourceConfig {
+  const baseUrl = optional("FIXTURE_SOURCE_URL");
+  if (!baseUrl) {
+    return {
+      name: str("OPERATOR", "mock").toLowerCase(),
+      baseUrl: optional("OPERATOR_BASE_URL") ?? "",
+      sportsPath: str("OPERATOR_SPORTS_PATH", "/sports/{sport}"),
+      isOperator: true,
+    };
+  }
+  return {
+    name: str("FIXTURE_SOURCE", new URL(baseUrl).hostname.replace(/^www\./, "")),
+    baseUrl,
+    sportsPath: str("FIXTURE_SOURCE_SPORTS_PATH", str("OPERATOR_SPORTS_PATH", "/sports/{sport}")),
+    isOperator: false,
+  };
+}
+
 function build(): AppConfig {
   const mode = oneOf("BETTING_MODE", ["mock", "live"] as const, "mock");
   const defaultDriver: BrowserDriverName = mode === "mock" ? "mock" : "sandbox";
@@ -231,14 +284,17 @@ function build(): AppConfig {
       loginPath: str("OPERATOR_LOGIN_PATH", "/login"),
       myBetsPath: str("OPERATOR_MY_BETS_PATH", "/my-bets"),
       searchPath: str("OPERATOR_SEARCH_PATH", "/search?query={query}"),
+      sportsPath: str("OPERATOR_SPORTS_PATH", "/sports/{sport}"),
       usernameLabel: str("OPERATOR_USERNAME_LABEL", "Username"),
       passwordLabel: str("OPERATOR_PASSWORD_LABEL", "Password"),
       loginButtonLabel: str("OPERATOR_LOGIN_BUTTON", "Log in"),
       loggedInMarker: str("OPERATOR_LOGGED_IN_MARKER", "log ?out|my account|my bets"),
     },
+    fixtureSource: readFixtureSource(),
     dashboardToken: optional("DASHBOARD_TOKEN") ?? null,
-    maxResearchMatches: int("MAX_RESEARCH_MATCHES", 6, 1),
-    maxShortlist: int("MAX_SHORTLIST", 3, 1),
+    maxResearchMatches: int("MAX_RESEARCH_MATCHES", 12, 1),
+    maxShortlist: int("MAX_SHORTLIST", 8, 1),
+    maxCyclePasses: int("MAX_CYCLE_PASSES", 5, 1),
   };
 
   if (config.mode === "live") {
@@ -278,4 +334,17 @@ export function getConfig(): AppConfig {
 /** Drops the memoised config. Used by tests that rewrite the environment. */
 export function resetConfig(): void {
   cached = null;
+}
+
+/**
+ * Whether fixtures come from a real site rather than the simulator.
+ *
+ * This is deliberately independent of `BETTING_MODE`. Mock mode is about money —
+ * no real stake can move — and says nothing about where the day's fixtures come
+ * from. Reading a real card while betting with simulated money is the most
+ * useful rehearsal there is: the whole discovery, research and pricing path runs
+ * against the real world, and only the last step is pretend.
+ */
+export function usesRealFixtureSource(): boolean {
+  return /^https?:\/\//i.test(getConfig().fixtureSource.baseUrl);
 }

@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
+import { clearRejections, recordRejection } from "../../../lib/cycle";
 import { idempotencyKey, newId } from "../../../lib/ids";
 import { createLogger } from "../../../lib/logger";
 import { potentialReturn } from "../../../lib/money";
@@ -99,6 +100,7 @@ export default defineTool({
         lastCheckedAt: "",
       };
       await store.append(TAB.activeBets, active);
+      await clearRejections(approved.matchKey);
 
       await schedule({
         kind: "monitor",
@@ -158,6 +160,19 @@ export default defineTool({
       });
       await store.update(TAB.approved, approvedId, { status: "failed", updatedAt: now });
       await reportNeedsHuman("execution", `${approved.matchName}: ${outcome.detail}`);
+      await recordRejection({
+        stage: "execution",
+        matchKey: approved.matchKey,
+        matchName: approved.matchName,
+        sport: approved.sport,
+        startsAt: approved.startsAt,
+        market: approved.market,
+        selection: approved.selection,
+        odds: approved.odds,
+        code: "needs_human",
+        reason: outcome.detail,
+        fixable: false,
+      });
 
       return { outcome: "needs_human", betId: claim.id, detail: outcome.detail };
     }
@@ -169,6 +184,22 @@ export default defineTool({
     });
     await store.update(TAB.approved, approvedId, { status: "failed", updatedAt: now });
     await store.update(TAB.drafts, approved.draftId, { status: "expired", updatedAt: now });
+
+    // The operator refused it — a price that drifted below the approved minimum
+    // is the usual cause, and it is fixable: a later pass may find it back.
+    await recordRejection({
+      stage: "execution",
+      matchKey: approved.matchKey,
+      matchName: approved.matchName,
+      sport: approved.sport,
+      startsAt: approved.startsAt,
+      market: approved.market,
+      selection: approved.selection,
+      odds: approved.odds,
+      code: "placement_refused",
+      reason: outcome.detail,
+      fixable: true,
+    });
 
     return { outcome: "rejected", betId: claim.id, detail: outcome.detail };
   },

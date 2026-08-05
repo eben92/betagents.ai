@@ -25,12 +25,18 @@ bet was sized for.
 | Drift | Read |
 | --- | --- |
 | Drifted out (price rose) | The market likes it less than it did. Sometimes noise, sometimes news you have not found. Search before deciding it is noise. |
-| Shortened (price fell) | The market agrees with us. Confirming — but the edge is smaller than the Planner sized for. |
-| Shortened past our probability | The edge is gone. Reject; there is nothing left to bet on. |
+| Shortened but still above `minimumViableOdds` | The market agrees with us. The edge is smaller than the Planner sized for, so approve at the current price — cut the stake if the thesis also thinned. |
+| Shortened below `minimumViableOdds` | The edge no longer clears the minimum. Reject, unless a safer market on the same read is priced better. |
+| Shortened past `breakEvenOdds` | There is nothing left to bet on at any stake. Reject. |
 | Moved sharply near kickoff | Something is known. Do not approve until you find out what. |
 
 A price that has moved a long way against us is the single most reliable signal
 in this whole procedure. Treat it as information, not as a discount.
+
+Note the difference between the middle rows. A drifted price is usually a fixed
+bet, not a dead one: approve it at what it costs now. Rejecting a sound thesis
+because the number is not the number the Planner saw an hour ago throws away a
+good bet and reports it as a rejection, which is worse than either.
 
 ## Cutting the stake
 
@@ -66,3 +72,10 @@ Reject without hesitation when:
 
 A rejection costs one opportunity. A bad approval costs the stake and several
 good days undoing it.
+
+Pick the `reasonCode` that is actually true. It is not a label — the cycle uses
+it to decide whether another sweep over different fixtures is worth running, and
+the operator reads it beside the match name. `price_moved` says the bet was
+sound and the number was not; `thesis_broken` says the bet was wrong. Reaching
+for `price_moved` because it sounds less final tells the system something untrue
+about the match.

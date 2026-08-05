@@ -47,9 +47,22 @@ export type { BrowserContext, PageText } from "./browser";
 
 const log = createLogger("operator");
 
+/**
+ * Whether the bookmaker is simulated — that is, whether real money can move.
+ *
+ * `BETTING_MODE` is checked first and is decisive. Reading a real fixture
+ * catalogue needs `BROWSER_DRIVER=sandbox`, and without this line that
+ * combination — mock mode, a real browser, a named operator — would have driven
+ * an actual bookmaker's betslip while the operator believed nothing could be
+ * staked. Mock mode must mean no real stake, whatever else is configured.
+ */
 export function isMock(): boolean {
   const config = getConfig();
-  return config.browserDriver === "mock" || config.operator.name === "mock";
+  return (
+    config.mode === "mock" ||
+    config.browserDriver === "mock" ||
+    config.operator.name === "mock"
+  );
 }
 
 export function operatorName(): string {

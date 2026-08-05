@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import * as browser from "../../../lib/operator/browser";
+import { getConfig, usesRealFixtureSource } from "../../../lib/config";
 import { toolOutputBudgetFor } from "../../../lib/model";
 import { isMock } from "../../../lib/operator";
 import { errorMessage } from "../../../lib/logger";
@@ -21,7 +22,13 @@ export default defineTool({
     "Move around the operator's site: open a page, read its text, snapshot what is interactive, or find an element by role/label/text and click, type into or read it. Use snapshot to see what is on the page and read to get its text.",
   inputSchema: z.object({
     action: z.enum(["open", "read", "snapshot", "find", "back"]),
-    url: z.string().optional().describe("For open. Relative paths resolve against the operator."),
+    url: z.string().optional().describe("For open. Relative paths resolve against the chosen site."),
+    site: z
+      .enum(["operator", "catalogue"])
+      .default("operator")
+      .describe(
+        "Which site a relative url belongs to. `catalogue` is the fixture listing you read the card from; `operator` is the account that takes bets. They can be different sites.",
+      ),
     by: z
       .enum(["role", "text", "label", "placeholder", "alt", "title", "testid", "first", "last"])
       .optional()
@@ -40,10 +47,24 @@ export default defineTool({
     // headroom a 64K model needs for the rest of the placement.
     const budget = toolOutputBudgetFor("EXECUTION");
 
-    if (isMock()) {
+    // The catalogue is reachable even when the bookmaker is simulated: reading a
+    // real card while staking pretend money is the rehearsal worth running, and
+    // nothing on a listing page can move money.
+    const catalogue = input.site === "catalogue" && usesRealFixtureSource();
+
+    if (isMock() && !catalogue) {
       return {
         simulated: true,
-        note: "The simulated operator has no pages to browse. Use price_selection and place_bet directly.",
+        note: usesRealFixtureSource()
+          ? "The simulated bookmaker has no pages to browse. Use price_selection and place_bet directly. The fixture catalogue is real — reach it with site: \"catalogue\"."
+          : "The simulated operator has no pages to browse. Use price_selection and place_bet directly.",
+      };
+    }
+
+    if (catalogue && getConfig().browserDriver !== "sandbox") {
+      return {
+        error:
+          "Reading the catalogue needs a real browser. Set BROWSER_DRIVER=sandbox; the bookmaker can stay simulated.",
       };
     }
 
@@ -51,7 +72,7 @@ export default defineTool({
       switch (input.action) {
         case "open": {
           if (!input.url) return { error: "open needs a url" };
-          const page = await browser.open(ctx, input.url);
+          const page = await browser.open(ctx, input.url, input.site);
           browser.assertNoBlockers(page, `opening ${input.url}`);
           return { url: page.url, title: page.title, text: page.text.slice(0, budget) };
         }

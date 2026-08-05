@@ -11,10 +11,21 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { recordBalance } from "../agent/lib/accounting";
+import { getConfig, usesRealFixtureSource } from "../agent/lib/config";
 import { snapshot } from "../agent/lib/bankroll";
+import {
+  advancePass,
+  beginCycle,
+  buildCycleReport,
+  cycleRejections,
+  decidePass,
+} from "../agent/lib/cycle";
 import { idempotencyKey } from "../agent/lib/ids";
 import { redactText } from "../agent/lib/logger";
+import { chunkMessage } from "../agent/lib/telegram/notify";
+import { parseDuckDuckGo, unwrapRedirect } from "../agent/lib/websearch";
 import {
+  isMock,
   getMockBalance,
   listMockBets,
   setMockOddsDrift,
@@ -22,7 +33,13 @@ import {
   settleMockBet,
 } from "../agent/lib/operator";
 import { OPEN_BET_STATUSES, setStore, TAB } from "../agent/lib/sheets";
-import { setMatchState } from "../agent/lib/sports";
+import {
+  createMockSportsProvider,
+  findSameFixture,
+  nameSimilarity,
+  setMatchState,
+  setSportsProviders,
+} from "../agent/lib/sports";
 import { claimDue, schedule } from "../agent/lib/wakeups";
 import { getLockedProfit, startDay } from "../agent/lib/state";
 import { dayKey } from "../agent/lib/time";
@@ -41,12 +58,19 @@ import placeBetTool from "../agent/subagents/execution/tools/place_bet";
 import priceSelection from "../agent/subagents/execution/tools/price_selection";
 import reconcileBet from "../agent/subagents/execution/tools/reconcile_bet";
 import recordBalanceTool from "../agent/subagents/execution/tools/record_balance";
+import recordOperatorFixtures from "../agent/subagents/execution/tools/record_operator_fixtures";
 import recordDraft from "../agent/subagents/planner/tools/record_draft";
 import rejectDraft from "../agent/subagents/reviewer/tools/reject_draft";
 import saveResearch from "../agent/subagents/research/tools/save_research";
 import settleBet from "../agent/subagents/watcher/tools/settle_bet";
 
-import { seedPricedFootballMatch, setupTest, teardownTest, toolContext } from "./harness";
+import {
+  seedFixture,
+  seedPricedFootballMatch,
+  setupTest,
+  teardownTest,
+  toolContext,
+} from "./harness";
 
 afterEach(teardownTest);
 
@@ -87,14 +111,13 @@ async function researchAndPrice(options: { minutesFromNow?: number; odds?: numbe
     supporting: ["home form", "opposition suspension"],
     opposing: ["home side may rotate"],
     sources: ["https://example.test/report"],
-    candidates: [
-      {
-        market: "1x2",
-        selection: "home",
-        estimatedProbability: 0.62,
-        rationale: "home advantage plus the suspension",
-      },
-    ],
+    consensus: { found: true, leaning: "previews split; slight lean to the home side", sampled: 4, agreesWithYou: true },
+    pick: {
+      market: "1x2",
+      selection: "home",
+      estimatedProbability: 0.62,
+      rationale: "home advantage plus the suspension",
+    },
   });
 
   const shortlistId: string = saved.candidatesAccepted[0].shortlistId;
@@ -146,7 +169,7 @@ describe("research", () => {
     setupTest();
     seedPricedFootballMatch();
 
-    const listed: Any = await call(listFixtures, { sport: "football", withinHours: 24 });
+    const listed: Any = await call(listFixtures, { sports: ["football"], withinHours: 24 });
     expect(listed.fixtures.length).toBeGreaterThan(0);
   });
 
@@ -164,8 +187,9 @@ describe("research", () => {
       dataQuality: "adequate",
       supporting: [],
       opposing: [],
-      candidates: [
-        { market: "1x2", selection: "home", estimatedProbability: 0.6, rationale: "ok" },
+      consensus: { found: true, leaning: "previews split; slight lean to the home side", sampled: 4, agreesWithYou: true },
+      pick: { market: "1x2", selection: "home", estimatedProbability: 0.6, rationale: "ok" },
+      alternatives: [
         { market: "moneyline", selection: "home", estimatedProbability: 0.6, rationale: "wrong sport" },
         { market: "1x2", selection: "not_a_code", estimatedProbability: 0.6, rationale: "invalid" },
       ],
@@ -177,7 +201,20 @@ describe("research", () => {
   });
 
   it("caps confidence when the agent calls its own evidence thin", async () => {
-    setupTest();
+    // Live config: the cap is a live-mode rule. On a simulated card the missing
+    // team news is the simulation, and capping there would put every mock bet
+    // below the staking threshold.
+    setupTest({
+      BETTING_MODE: "live",
+      BROWSER_DRIVER: "sandbox",
+      OPERATOR: "testbook",
+      OPERATOR_BASE_URL: "https://testbook.example",
+      OPERATOR_USERNAME: "someone",
+      OPERATOR_PASSWORD: "secret",
+      GOOGLE_SHEETS_SPREADSHEET_ID: "sheet",
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: "svc@example.test",
+      GOOGLE_PRIVATE_KEY: "key",
+    });
     const fixture = seedPricedFootballMatch();
 
     const saved: Any = await call(saveResearch, {
@@ -190,11 +227,37 @@ describe("research", () => {
       dataQuality: "thin",
       supporting: [],
       opposing: [],
-      candidates: [],
+      consensus: { found: false, leaning: "", sampled: 0, agreesWithYou: false },
+      pick: null,
+      noBetReason: "nothing checkable was published about either side",
     });
 
     expect(saved.confidence).toBe(0.5);
     expect(saved.confidenceCapped).toBe(true);
+  });
+
+  it("does not cap thin evidence on a simulated card", async () => {
+    setupTest();
+    const fixture = seedPricedFootballMatch();
+
+    const saved: Any = await call(saveResearch, {
+      matchKey: fixture.matchKey,
+      sport: "football",
+      matchName: `${fixture.home} vs ${fixture.away}`,
+      startsAt: fixture.startsAt,
+      summary: "teams that do not exist have no team news",
+      confidence: 0.72,
+      dataQuality: "thin",
+      supporting: [],
+      opposing: [],
+      consensus: { found: true, leaning: "previews split; slight lean to the home side", sampled: 4, agreesWithYou: true },
+      pick: { market: "1x2", selection: "home", estimatedProbability: 0.6, rationale: "x" },
+    });
+
+    // Capping here would put every mock bet under MIN_CONFIDENCE, so the one
+    // path the rehearsal exists to exercise could never run.
+    expect(saved.confidence).toBe(0.72);
+    expect(saved.confidenceCapped).toBe(false);
   });
 
   it("refreshes a match in place rather than duplicating it", async () => {
@@ -212,7 +275,9 @@ describe("research", () => {
         dataQuality: "adequate",
         supporting: [],
         opposing: [],
-        candidates: [],
+        consensus: { found: false, leaning: "", sampled: 0, agreesWithYou: false },
+        pick: null,
+        noBetReason: "evenly matched at the price",
       });
 
     await write("first pass");
@@ -251,9 +316,8 @@ describe("pricing and planning", () => {
       dataQuality: "strong",
       supporting: [],
       opposing: [],
-      candidates: [
-        { market: "1x2", selection: "home", estimatedProbability: 0.62, rationale: "x" },
-      ],
+      consensus: { found: true, leaning: "previews split; slight lean to the home side", sampled: 4, agreesWithYou: true },
+      pick: { market: "1x2", selection: "home", estimatedProbability: 0.62, rationale: "x" },
     });
 
     const hidden: Any = await call(listCandidates, {});
@@ -470,6 +534,7 @@ describe("review", () => {
 
     const rejected: Any = await call(rejectDraft, {
       draftId: drafted.draftId,
+      reasonCode: "thesis_broken",
       reason: "key striker ruled out",
     });
     expect(rejected.rejected).toBe(true);
@@ -1087,5 +1152,784 @@ describe("wake-ups", () => {
     // creates the next one instead of silently colliding with the old.
     await schedule({ kind: "daily", dueAt, reason: "start of the betting day" });
     expect((await store.list(TAB.wakeups)).filter((row) => row.kind === "daily")).toHaveLength(2);
+  });
+});
+
+describe("cycle passes", () => {
+  it("attributes research, drafts and rejections to the open cycle", async () => {
+    const { store } = setupTest();
+    const { cycle } = await beginCycle("daily");
+    const { shortlistId } = await researchAndPrice({ odds: 2.1 });
+
+    expect((await store.list(TAB.research))[0]!.cycleId).toBe(cycle.id);
+
+    await call(recordDraft, {
+      shortlistId,
+      stake: 20,
+      odds: 2.1,
+      probability: 0.62,
+      edge: 0.3,
+      reasoning: "test",
+    });
+
+    expect((await store.list(TAB.drafts))[0]!.cycleId).toBe(cycle.id);
+  });
+
+  it("records why each stage declined a match", async () => {
+    setupTest();
+    const { cycle } = await beginCycle("daily");
+    const fixture = seedPricedFootballMatch();
+
+    await call(operatorLogin, {});
+    await call(recordBalanceTool, {});
+
+    await call(saveResearch, {
+      matchKey: fixture.matchKey,
+      sport: "football",
+      matchName: `${fixture.home} vs ${fixture.away}`,
+      startsAt: fixture.startsAt,
+      summary: "even match",
+      confidence: 0.7,
+      dataQuality: "adequate",
+      supporting: [],
+      opposing: [],
+      consensus: { found: false, leaning: "", sampled: 0, agreesWithYou: false },
+      pick: null,
+      noBetReason: "both sides fully fit and the price is fair",
+    });
+
+    const rejections = await cycleRejections(cycle.id);
+    expect(rejections).toHaveLength(1);
+    expect(rejections[0]!.stage).toBe("research");
+    expect(rejections[0]!.code).toBe("no_selection");
+    expect(rejections[0]!.reason).toMatch(/price is fair/);
+  });
+
+  it("records the rule that declined a stake, without the planner having to", async () => {
+    setupTest();
+    const { cycle } = await beginCycle("daily");
+    const { shortlistId } = await researchAndPrice({ odds: 1.2 });
+
+    const sized: Any = await call(computeStakeTool, {
+      shortlistId,
+      probability: 0.62,
+      odds: 1.2,
+      confidence: 0.8,
+      conviction: 1,
+      remainingOpportunities: 1,
+    });
+    expect(sized.stake).toBe(0);
+
+    const planner = (await cycleRejections(cycle.id)).filter((entry) => entry.stage === "planner");
+    expect(planner).toHaveLength(1);
+    expect(planner[0]!.code).toBe("edge_below_minimum");
+    expect(planner[0]!.fixable).toBe(true);
+  });
+
+  it("retires a rejection once the match is backed after all", async () => {
+    setupTest();
+    const { cycle } = await beginCycle("daily");
+    const { shortlistId } = await researchAndPrice({ odds: 2.1 });
+
+    await call(computeStakeTool, {
+      shortlistId,
+      probability: 0.4,
+      odds: 2.1,
+      confidence: 0.8,
+      conviction: 1,
+      remainingOpportunities: 1,
+    });
+    expect(await cycleRejections(cycle.id)).toHaveLength(1);
+
+    await call(recordDraft, {
+      shortlistId,
+      stake: 20,
+      odds: 2.1,
+      probability: 0.62,
+      edge: 0.3,
+      reasoning: "second look at a better price",
+    });
+
+    // The report must not list the same match as both declined and drafted.
+    expect(await cycleRejections(cycle.id)).toHaveLength(0);
+  });
+
+  it("keeps one reason per stage rather than one per attempt", async () => {
+    setupTest();
+    const { cycle } = await beginCycle("daily");
+    const { shortlistId } = await researchAndPrice({ odds: 1.2 });
+
+    for (const confidence of [0.8, 0.7, 0.65]) {
+      await call(computeStakeTool, {
+        shortlistId,
+        probability: 0.62,
+        odds: 1.2,
+        confidence,
+        conviction: 1,
+        remainingOpportunities: 1,
+      });
+    }
+
+    expect(await cycleRejections(cycle.id)).toHaveLength(1);
+  });
+
+  it("sweeps again when nothing was backed and fixtures remain", async () => {
+    setupTest();
+    await beginCycle("daily");
+
+    seedFixture({
+      sport: "football",
+      home: "Alpha",
+      away: "Beta",
+      league: "football/test",
+      startsAt: new Date(Date.now() + 120 * 60_000),
+    });
+
+    const decision = await decidePass();
+    expect(decision.retry).toBe(true);
+    expect(decision.fixturesUnexamined).toBe(1);
+  });
+
+  it("stops sweeping once the card has been assessed", async () => {
+    setupTest();
+    await beginCycle("daily");
+    const fixture = seedPricedFootballMatch();
+
+    await call(saveResearch, {
+      matchKey: fixture.matchKey,
+      sport: "football",
+      matchName: `${fixture.home} vs ${fixture.away}`,
+      startsAt: fixture.startsAt,
+      summary: "nothing here",
+      confidence: 0.7,
+      dataQuality: "adequate",
+      supporting: [],
+      opposing: [],
+      consensus: { found: false, leaning: "", sampled: 0, agreesWithYou: false },
+      pick: null,
+      noBetReason: "no angle",
+    });
+
+    const decision = await decidePass();
+    expect(decision.retry).toBe(false);
+    expect(decision.reason).toMatch(/every fixture/);
+  });
+
+  it("stops sweeping after the configured number of passes", async () => {
+    setupTest({ MAX_CYCLE_PASSES: "2" });
+    await beginCycle("daily");
+
+    seedFixture({
+      sport: "football",
+      home: "Alpha",
+      away: "Beta",
+      league: "football/test",
+      startsAt: new Date(Date.now() + 120 * 60_000),
+    });
+
+    expect((await decidePass()).retry).toBe(true);
+    await advancePass();
+    const second = await decidePass();
+    expect(second.retry).toBe(false);
+    expect(second.reason).toMatch(/all 2 passes/);
+  });
+
+  it("stops sweeping once a bet is placed", async () => {
+    setupTest();
+    await beginCycle("daily");
+    await placeOneBet();
+
+    const decision = await decidePass();
+    expect(decision.retry).toBe(false);
+    expect(decision.placed).toBe(1);
+  });
+
+  it("hides matches this cycle assessed from the next pass", async () => {
+    setupTest();
+    await beginCycle("daily");
+    const fixture = seedPricedFootballMatch();
+
+    const before: Any = await call(listFixtures, { sports: ["football"], withinHours: 24 });
+    expect(before.fixtures).toHaveLength(1);
+
+    await call(saveResearch, {
+      matchKey: fixture.matchKey,
+      sport: "football",
+      matchName: `${fixture.home} vs ${fixture.away}`,
+      startsAt: fixture.startsAt,
+      summary: "assessed",
+      confidence: 0.7,
+      dataQuality: "adequate",
+      supporting: [],
+      opposing: [],
+      consensus: { found: false, leaning: "", sampled: 0, agreesWithYou: false },
+      pick: null,
+      noBetReason: "no angle",
+    });
+
+    const after: Any = await call(listFixtures, { sports: ["football"], withinHours: 24 });
+    expect(after.fixtures).toHaveLength(0);
+    expect(after.alreadyAssessedThisCycle).toBe(1);
+  });
+});
+
+describe("cycle reporting", () => {
+  it("names every declined match under the agent that declined it", async () => {
+    setupTest();
+    const { cycle } = await beginCycle("daily");
+    const { shortlistId } = await researchAndPrice({ odds: 1.2 });
+
+    await call(computeStakeTool, {
+      shortlistId,
+      probability: 0.62,
+      odds: 1.2,
+      confidence: 0.8,
+      conviction: 1,
+      remainingOpportunities: 1,
+    });
+
+    const digest = await buildCycleReport(cycle.id);
+    const text = digest.lines.join("\n");
+
+    expect(text).toMatch(/NOT BACKED \(1\)/);
+    expect(text).toMatch(/Planner \(1\)/);
+    expect(text).toMatch(/Northbridge United vs Easthaven Rovers — 1x2\/home/);
+    expect(text).toMatch(/edge_below_minimum/);
+  });
+
+  it("reports a placed bet with its stake and return", async () => {
+    setupTest();
+    const { cycle } = await beginCycle("daily");
+    const { placed } = await placeOneBet();
+    expect(placed.outcome).toBe("placed");
+
+    const digest = await buildCycleReport(cycle.id);
+    expect(digest.placed).toBe(1);
+    expect(digest.lines.join("\n")).toMatch(/PLACED \(1\)/);
+  });
+
+  it("splits a report too long for one Telegram message", () => {
+    const long = Array.from({ length: 400 }, (_, index) => `line ${index} of a long report`).join("\n");
+    const chunks = chunkMessage(long);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(4096);
+    expect(chunks.join("\n")).toBe(long);
+  });
+});
+
+describe("fixing a bet instead of rejecting it", () => {
+  it("tells the reviewer the price at which the bet still works", async () => {
+    setupTest();
+    const { shortlistId } = await researchAndPrice({ odds: 2.1 });
+
+    const drafted: Any = await call(recordDraft, {
+      shortlistId,
+      stake: 20,
+      odds: 2.1,
+      probability: 0.5,
+      edge: 0.05,
+      reasoning: "test",
+    });
+
+    const loaded: Any = await call(getDraft, { draftId: drafted.draftId });
+    expect(loaded.price.breakEvenOdds).toBeCloseTo(2, 5);
+    expect(loaded.price.minimumViableOdds).toBeCloseTo(2.1, 5);
+    expect(loaded.price.stillWorthBackingAtCurrentPrice).toBe(true);
+  });
+
+  it("refuses a price rejection that never considered a fix", async () => {
+    setupTest();
+    const { shortlistId } = await researchAndPrice({ odds: 2.1 });
+
+    const drafted: Any = await call(recordDraft, {
+      shortlistId,
+      stake: 20,
+      odds: 2.1,
+      probability: 0.62,
+      edge: 0.3,
+      reasoning: "test",
+    });
+
+    const refused: Any = await call(rejectDraft, {
+      draftId: drafted.draftId,
+      reasonCode: "price_moved",
+      reason: "shortened",
+    });
+    expect(refused.rejected).toBe(false);
+    expect(refused.detail).toMatch(/consideredInstead/);
+
+    const accepted: Any = await call(rejectDraft, {
+      draftId: drafted.draftId,
+      reasonCode: "price_moved",
+      reason: "shortened",
+      consideredInstead: "1.4 is below break-even at 0.62, and no safer market is offered",
+    });
+    expect(accepted.rejected).toBe(true);
+  });
+});
+
+describe("the operator's card as the source of truth", () => {
+  it("matches a bookmaker's team names against the score feed", () => {
+    expect(nameSimilarity("Man Utd", "Manchester United")).toBeGreaterThan(0.6);
+    expect(nameSimilarity("Wolves", "Wolverhampton Wanderers")).toBeGreaterThan(0.6);
+    expect(nameSimilarity("Inter", "Internazionale")).toBeGreaterThan(0.6);
+    expect(nameSimilarity("Brighton & Hove Albion FC", "Brighton")).toBeGreaterThan(0.6);
+
+    // The pairs this has to get right: same city, different club. Settling a
+    // bet against the wrong one of these is the failure that costs money.
+    expect(nameSimilarity("Manchester United", "Manchester City")).toBeLessThan(0.6);
+    expect(nameSimilarity("Sheffield Wednesday", "Sheffield United")).toBeLessThan(0.6);
+    expect(nameSimilarity("Nottingham Forest", "Notts County")).toBeLessThan(0.6);
+
+    // And the other way a fixture gets confused: a different team of the same
+    // club. The reserves and the women's side play different matches.
+    expect(nameSimilarity("Arsenal", "Arsenal Women")).toBeLessThan(0.6);
+    expect(nameSimilarity("Real Madrid", "Real Madrid B")).toBeLessThan(0.6);
+    expect(nameSimilarity("Ajax", "Ajax U21")).toBeLessThan(0.6);
+  });
+
+  it("refuses to tie two fixtures together on a weak match", () => {
+    const startsAt = new Date(Date.now() + 3 * 60 * 60_000).toISOString();
+    const candidates = [
+      { home: "Manchester City", away: "Arsenal", startsAt, matchKey: "k1" },
+      { home: "Real Madrid", away: "Barcelona", startsAt, matchKey: "k2" },
+    ];
+
+    expect(findSameFixture({ home: "Man City", away: "Arsenal FC", startsAt }, candidates)?.matchKey).toBe("k1");
+    expect(findSameFixture({ home: "Man Utd", away: "Arsenal", startsAt }, candidates)).toBeNull();
+
+    // A fixture a day away is a different fixture, however alike the names.
+    const tomorrow = new Date(Date.now() + 27 * 60 * 60_000).toISOString();
+    expect(findSameFixture({ home: "Man City", away: "Arsenal", startsAt: tomorrow }, candidates)).toBeNull();
+  });
+
+  it("records a card and serves it to research ahead of the public feed", async () => {
+    setupTest({
+      BETTING_MODE: "live",
+      BROWSER_DRIVER: "sandbox",
+      OPERATOR: "testbook",
+      OPERATOR_BASE_URL: "https://testbook.example",
+      OPERATOR_USERNAME: "someone",
+      OPERATOR_PASSWORD: "secret",
+      GOOGLE_SHEETS_SPREADSHEET_ID: "sheet",
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: "svc@example.test",
+      GOOGLE_PRIVATE_KEY: "key",
+    });
+    // No public provider: proving the card alone answers, and that discovery
+    // never silently falls back to a schedule nobody can bet on.
+    setSportsProviders([]);
+
+    const startsAt = new Date(Date.now() + 4 * 60 * 60_000).toISOString();
+    const recorded: Any = await call(recordOperatorFixtures, {
+      sport: "football",
+      fixtures: [
+        { home: "Northbridge United", away: "Easthaven Rovers", competition: "Test Cup", startsAt, eventRef: "e1" },
+        { home: "Kingsport Athletic", away: "Marlowe Town", competition: "Test Cup", startsAt, eventRef: "e2" },
+      ],
+    });
+    expect(recorded.recorded).toBe(2);
+
+    const listed: Any = await call(listFixtures, { sports: ["football"], withinHours: 24 });
+    expect(listed.source).toBe("operator");
+    expect(listed.fixtures).toHaveLength(2);
+    expect(listed.fixtures[0].competition).toBe("Test Cup");
+  });
+
+  it("discards a fixture whose date was read wrong, and says which", async () => {
+    setupTest({
+      BETTING_MODE: "live",
+      BROWSER_DRIVER: "sandbox",
+      OPERATOR: "testbook",
+      OPERATOR_BASE_URL: "https://testbook.example",
+      OPERATOR_USERNAME: "someone",
+      OPERATOR_PASSWORD: "secret",
+      GOOGLE_SHEETS_SPREADSHEET_ID: "sheet",
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: "svc@example.test",
+      GOOGLE_PRIVATE_KEY: "key",
+    });
+    setSportsProviders([]);
+
+    const recorded: Any = await call(recordOperatorFixtures, {
+      sport: "football",
+      fixtures: [
+        {
+          home: "Good Fixture",
+          away: "Real Opponent",
+          competition: "Test",
+          startsAt: new Date(Date.now() + 4 * 60 * 60_000).toISOString(),
+          eventRef: "ok",
+        },
+        // A year out: the classic misread of a bare "15:00" under a date heading.
+        {
+          home: "Wrong Year",
+          away: "Bad Date",
+          competition: "Test",
+          startsAt: new Date(Date.now() + 400 * 24 * 60 * 60_000).toISOString(),
+          eventRef: "bad",
+        },
+        { home: "Same", away: "Same", competition: "Test", startsAt: new Date(Date.now() + 3600_000).toISOString(), eventRef: "x" },
+      ],
+    });
+
+    expect(recorded.recorded).toBe(1);
+    expect(recorded.discarded).toHaveLength(2);
+    expect(recorded.discarded.join(" ")).toMatch(/not on the current card/);
+    expect(recorded.discarded.join(" ")).toMatch(/both sides are the same/);
+  });
+
+  it("adopts the score feed's key so a card fixture can still be settled", async () => {
+    setupTest({
+      BETTING_MODE: "live",
+      BROWSER_DRIVER: "sandbox",
+      OPERATOR: "testbook",
+      OPERATOR_BASE_URL: "https://testbook.example",
+      OPERATOR_USERNAME: "someone",
+      OPERATOR_PASSWORD: "secret",
+      GOOGLE_SHEETS_SPREADSHEET_ID: "sheet",
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: "svc@example.test",
+      GOOGLE_PRIVATE_KEY: "key",
+    });
+
+    const startsAt = new Date(Date.now() + 4 * 60 * 60_000);
+    const fixture = seedFixture({
+      sport: "football",
+      home: "Northbridge United",
+      away: "Easthaven Rovers",
+      league: "football/test",
+      startsAt,
+    });
+    // The mock world stands in for the public score feed here.
+    setSportsProviders([createMockSportsProvider()]);
+
+    const recorded: Any = await call(recordOperatorFixtures, {
+      sport: "football",
+      // The bookmaker's shorter names for the same match.
+      fixtures: [
+        { home: "Northbridge", away: "Easthaven", competition: "Test Cup", startsAt: startsAt.toISOString(), eventRef: "e1" },
+      ],
+    });
+
+    expect(recorded.settleable).toBe(1);
+
+    const listed: Any = await call(listFixtures, { sports: ["football"], withinHours: 24 });
+    expect(listed.fixtures[0].matchKey).toBe(fixture.matchKey);
+  });
+});
+
+describe("rejection ledger integrity", () => {
+  it("keeps one row when the same selection is declined concurrently", async () => {
+    setupTest();
+    const { cycle } = await beginCycle("daily");
+    const { shortlistId } = await researchAndPrice({ odds: 1.2 });
+
+    // The planner sizes several candidates at once; two declines of the same
+    // selection landing together used to produce two rows in the report.
+    await Promise.all(
+      [0.8, 0.75, 0.7, 0.65].map((confidence) =>
+        call(computeStakeTool, {
+          shortlistId,
+          probability: 0.62,
+          odds: 1.2,
+          confidence,
+          conviction: 1,
+          remainingOpportunities: 1,
+        }),
+      ),
+    );
+
+    expect(await cycleRejections(cycle.id)).toHaveLength(1);
+  });
+
+  it("separates the same match declined at two different stages", async () => {
+    setupTest();
+    const { cycle } = await beginCycle("daily");
+    const { shortlistId } = await researchAndPrice({ odds: 2.1 });
+
+    await call(computeStakeTool, {
+      shortlistId,
+      probability: 0.3,
+      odds: 2.1,
+      confidence: 0.8,
+      conviction: 1,
+      remainingOpportunities: 1,
+    });
+
+    const drafted: Any = await call(recordDraft, {
+      shortlistId,
+      stake: 20,
+      odds: 2.1,
+      probability: 0.62,
+      edge: 0.3,
+      reasoning: "test",
+    });
+    await call(rejectDraft, {
+      draftId: drafted.draftId,
+      reasonCode: "thesis_broken",
+      reason: "keeper ruled out",
+    });
+
+    // Drafting cleared the planner's rejection; the reviewer's replaces it.
+    const rejections = await cycleRejections(cycle.id);
+    expect(rejections).toHaveLength(1);
+    expect(rejections[0]!.stage).toBe("reviewer");
+  });
+});
+
+describe("deep research", () => {
+  it("records what other people predicted alongside the pick", async () => {
+    const { store } = setupTest();
+    const fixture = seedPricedFootballMatch();
+
+    const saved: Any = await call(saveResearch, {
+      matchKey: fixture.matchKey,
+      sport: "football",
+      matchName: `${fixture.home} vs ${fixture.away}`,
+      startsAt: fixture.startsAt,
+      summary: "away side underrated",
+      confidence: 0.7,
+      dataQuality: "adequate",
+      supporting: [],
+      opposing: [],
+      consensus: { found: true, leaning: "five of six tip the home win", sampled: 6, agreesWithYou: false },
+      pick: { market: "1x2", selection: "away", estimatedProbability: 0.45, rationale: "keeper fit" },
+    });
+
+    expect(saved.consensusChecked).toBe(true);
+    // Going against the crowd is allowed, but it is flagged so the planner and
+    // reviewer know the pick is the minority view.
+    expect(saved.againstConsensus).toBe(true);
+
+    const research = (await store.list(TAB.research))[0]!;
+    expect(research.consensus.sampled).toBe(6);
+    expect(research.consensus.leaning).toMatch(/five of six/);
+  });
+
+  it("refuses a claimed consensus that read nothing", async () => {
+    setupTest();
+    const fixture = seedPricedFootballMatch();
+
+    const saved: Any = await call(saveResearch, {
+      matchKey: fixture.matchKey,
+      sport: "football",
+      matchName: `${fixture.home} vs ${fixture.away}`,
+      startsAt: fixture.startsAt,
+      summary: "looks good",
+      confidence: 0.7,
+      dataQuality: "adequate",
+      supporting: [],
+      opposing: [],
+      consensus: { found: true, leaning: "everyone likes the home side", sampled: 0, agreesWithYou: true },
+      pick: { market: "1x2", selection: "home", estimatedProbability: 0.6, rationale: "form" },
+    });
+
+    expect(saved.recorded).toBe(false);
+    expect(saved.error).toMatch(/sampled is 0/);
+  });
+
+  it("keeps only markets the card offered that the system can settle", async () => {
+    setupTest({
+      BETTING_MODE: "live",
+      BROWSER_DRIVER: "sandbox",
+      OPERATOR: "testbook",
+      OPERATOR_BASE_URL: "https://testbook.example",
+      OPERATOR_USERNAME: "someone",
+      OPERATOR_PASSWORD: "secret",
+      GOOGLE_SHEETS_SPREADSHEET_ID: "sheet",
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: "svc@example.test",
+      GOOGLE_PRIVATE_KEY: "key",
+    });
+    setSportsProviders([]);
+
+    await call(recordOperatorFixtures, {
+      sport: "football",
+      fixtures: [
+        {
+          home: "Alpha",
+          away: "Beta",
+          competition: "Test",
+          startsAt: new Date(Date.now() + 4 * 60 * 60_000).toISOString(),
+          eventRef: "e1",
+          offers: [
+            { market: "1x2", selection: "home", odds: 2.1 },
+            { market: "over_under", selection: "over_2.5", odds: 1.9 },
+            { market: "moneyline", selection: "home", odds: 2.0 },
+            { market: "correct_score", selection: "2-1", odds: 9 },
+            { market: "1x2", selection: "home", odds: 0.4 },
+          ],
+        },
+      ],
+    });
+
+    const listed: Any = await call(listFixtures, { sports: ["football"], withinHours: 24 });
+    const offered = listed.fixtures[0].offered;
+
+    // The football markets survive; a basketball market, an invented one and an
+    // impossible price do not — research must never be shown an option that
+    // cannot become a settleable bet.
+    expect(offered.map((o: Any) => `${o.market}/${o.selection}`)).toEqual([
+      "1x2/home",
+      "over_under/over_2.5",
+    ]);
+  });
+
+  it("reads the card from a catalogue that is not the staking account", () => {
+    setupTest({
+      BETTING_MODE: "live",
+      BROWSER_DRIVER: "sandbox",
+      OPERATOR: "testbook",
+      OPERATOR_BASE_URL: "https://testbook.example",
+      OPERATOR_USERNAME: "someone",
+      OPERATOR_PASSWORD: "secret",
+      FIXTURE_SOURCE_URL: "https://sports.example.com",
+      GOOGLE_SHEETS_SPREADSHEET_ID: "sheet",
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: "svc@example.test",
+      GOOGLE_PRIVATE_KEY: "key",
+    });
+
+    const config = getConfig();
+    expect(config.fixtureSource.baseUrl).toBe("https://sports.example.com");
+    expect(config.fixtureSource.isOperator).toBe(false);
+    // The account that takes the bets is untouched by naming a catalogue.
+    expect(config.operator.baseUrl).toBe("https://testbook.example");
+  });
+});
+
+describe("mock mode is about money, not about fixtures", () => {
+  it("keeps the bookmaker simulated even with a real browser and a named operator", () => {
+    setupTest({
+      BETTING_MODE: "mock",
+      BROWSER_DRIVER: "sandbox",
+      OPERATOR: "sportybet",
+      OPERATOR_BASE_URL: "https://sportybet.example",
+      FIXTURE_SOURCE_URL: "https://sports.example.com",
+    });
+
+    // Reading a real catalogue requires a real browser. That must never turn
+    // into a real betslip: BETTING_MODE is what decides whether money moves.
+    expect(usesRealFixtureSource()).toBe(true);
+    expect(isMock()).toBe(true);
+  });
+
+  it("researches a real card while staking against the simulator", async () => {
+    setupTest({
+      BETTING_MODE: "mock",
+      BROWSER_DRIVER: "sandbox",
+      FIXTURE_SOURCE_URL: "https://sports.example.com",
+    });
+    setSportsProviders([]);
+
+    const startsAt = new Date(Date.now() + 5 * 60 * 60_000).toISOString();
+    await call(recordOperatorFixtures, {
+      sport: "football",
+      fixtures: [
+        {
+          home: "Enyimba",
+          away: "Rangers Intl",
+          competition: "NPFL",
+          startsAt,
+          eventRef: "b1",
+          offers: [{ market: "1x2", selection: "home", odds: 2.3 }],
+        },
+      ],
+    });
+
+    const listed: Any = await call(listFixtures, { sports: ["football"], withinHours: 24 });
+    expect(listed.source).toBe("operator");
+    expect(listed.fixtures[0].match).toBe("Enyimba vs Rangers Intl");
+    expect(listed.fixtures[0].offered[0].odds).toBe(2.3);
+  });
+});
+
+describe("search returns links that can be fetched", () => {
+  it("unwraps the tracking redirects search engines hand back", () => {
+    expect(unwrapRedirect("//duckduckgo.com/l/?uddg=https%3A%2F%2Fgoal.com%2Fpreview&rut=x")).toBe(
+      "https://goal.com/preview",
+    );
+    expect(
+      unwrapRedirect("http://www.bing.com/news/apiclick.aspx?ref=FexRss&url=https%3A%2F%2Fbbc.co.uk%2Fa&c="),
+    ).toBe("https://bbc.co.uk/a");
+    // Already direct, and non-URLs, are left alone rather than mangled.
+    expect(unwrapRedirect("https://example.com/x?url=notaurl")).toBe("https://example.com/x?url=notaurl");
+  });
+
+  it("reads results out of a DuckDuckGo page", () => {
+    const html = `
+      <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Ffreesupertips.com%2Ftips">
+        Arsenal vs Chelsea Predictions &amp; Tips
+      </a>
+      <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgoal.com%2Fpreview">Preview</a>
+      <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgoal.com%2Fpreview">Duplicate</a>
+    `;
+    const results = parseDuckDuckGo(html, 10);
+
+    expect(results).toHaveLength(2);
+    expect(results[0]!.url).toBe("https://freesupertips.com/tips");
+    expect(results[0]!.title).toBe("Arsenal vs Chelsea Predictions & Tips");
+    expect(results[0]!.source).toBe("freesupertips.com");
+  });
+});
+
+describe("the card is a hard dependency", () => {
+  it("returns nothing rather than a schedule the bookmaker may not offer", async () => {
+    setupTest({
+      BETTING_MODE: "mock",
+      BROWSER_DRIVER: "sandbox",
+      FIXTURE_SOURCE_URL: "https://sports.example.com",
+    });
+    // A full simulated card exists and must NOT be substituted.
+    seedPricedFootballMatch();
+
+    const listed: Any = await call(listFixtures, { sports: ["football"], withinHours: 24 });
+
+    expect(listed.cardStale).toBe(true);
+    expect(listed.fixtures).toHaveLength(0);
+    expect(listed.sourceNote).toMatch(/card has not been read/);
+  });
+
+  it("serves the card once it has been read", async () => {
+    setupTest({
+      BETTING_MODE: "mock",
+      BROWSER_DRIVER: "sandbox",
+      FIXTURE_SOURCE_URL: "https://sports.example.com",
+    });
+    setSportsProviders([]);
+
+    await call(recordOperatorFixtures, {
+      sport: "football",
+      fixtures: [
+        {
+          home: "Enyimba",
+          away: "Rangers Intl",
+          competition: "NPFL",
+          startsAt: new Date(Date.now() + 5 * 60 * 60_000).toISOString(),
+          eventRef: "b1",
+          offers: [{ market: "1x2", selection: "home", odds: 2.3 }],
+        },
+      ],
+    });
+
+    const listed: Any = await call(listFixtures, { sports: ["football"], withinHours: 24 });
+    expect(listed.cardStale).toBe(false);
+    expect(listed.source).toBe("operator");
+    expect(listed.fixtures).toHaveLength(1);
+  });
+});
+
+describe("a cycle does not sweep when there is nothing to sweep", () => {
+  it("stops retrying when the card could not be read", async () => {
+    setupTest({
+      BETTING_MODE: "mock",
+      BROWSER_DRIVER: "sandbox",
+      FIXTURE_SOURCE_URL: "https://sports.example.com",
+    });
+    await beginCycle("daily");
+    seedPricedFootballMatch();
+
+    // Nothing was backed and fixtures notionally exist, but the catalogue was
+    // never read — so four more passes would research an empty list four times.
+    const decision = await decidePass();
+    expect(decision.retry).toBe(false);
+    expect(decision.reason).toMatch(/card has not been read/);
   });
 });

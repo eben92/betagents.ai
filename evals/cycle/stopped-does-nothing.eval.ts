@@ -17,6 +17,10 @@ export default defineEval({
 
     t.succeeded();
     t.notCalledTool("schedule_wakeup");
+    // `begin_cycle` refuses while stopped, so no cycle is left open for the
+    // next wake-up to resume.
+    t.notCalledTool("end_pass");
+    t.notCalledTool("send_cycle_report");
     t.judge.autoevals.closedQA(
       "Does the reply indicate the system is stopped and that no betting work was carried out?",
     );

@@ -97,7 +97,48 @@ export function setTelegramTransport(next: TelegramTransport | null): void {
   transport = next;
 }
 
-async function deliver(text: string): Promise<boolean> {
+/** Telegram's hard limit on one message. */
+const MAX_MESSAGE_CHARS = 4096;
+
+/**
+ * Splits a report at line boundaries so a long one arrives as several readable
+ * messages rather than being rejected whole.
+ *
+ * A cycle report names every match that was not backed, so on a full card it
+ * comfortably exceeds the limit — and a report that fails to send is the one
+ * failure mode this system cannot tolerate, because it is how the operator
+ * stops knowing what their money is doing.
+ */
+export function chunkMessage(text: string, limit = MAX_MESSAGE_CHARS): string[] {
+  if (text.length <= limit) return [text];
+
+  const chunks: string[] = [];
+  let current = "";
+
+  const flush = (): void => {
+    if (current) chunks.push(current);
+    current = "";
+  };
+
+  for (const line of text.split("\n")) {
+    // A single line longer than the limit is split on width; nothing else can
+    // be done with it, and dropping it would lose the reason for a rejection.
+    if (line.length > limit) {
+      flush();
+      for (let index = 0; index < line.length; index += limit) {
+        chunks.push(line.slice(index, index + limit));
+      }
+      continue;
+    }
+    if (current.length + line.length + 1 > limit) flush();
+    current = current ? `${current}\n${line}` : line;
+  }
+
+  flush();
+  return chunks;
+}
+
+async function sendOne(text: string): Promise<boolean> {
   if (transport) return transport(text);
 
   const config = getConfig();
@@ -116,6 +157,14 @@ async function deliver(text: string): Promise<boolean> {
     log.warn("telegram delivery failed", { error: errorMessage(error) });
     return false;
   }
+}
+
+async function deliver(text: string): Promise<boolean> {
+  const chunks = chunkMessage(text);
+  for (const chunk of chunks) {
+    if (!(await sendOne(chunk))) return false;
+  }
+  return true;
 }
 
 /**

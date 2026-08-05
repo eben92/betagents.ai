@@ -18,21 +18,68 @@ const log = createLogger("sports:espn");
 const BASE = "https://site.api.espn.com/apis/site/v2/sports";
 const TIMEOUT_MS = 12_000;
 
-/** `<espn sport path>/<league slug>` pairs queried for each supported sport. */
+/**
+ * `<espn sport path>/<league slug>` pairs queried for each supported sport.
+ *
+ * The list is long on purpose. A card of five or six competitions is empty
+ * midweek and thin at the best of times, and a system that finds nothing to bet
+ * on usually has a discovery problem rather than a judgement one. A slug ESPN
+ * does not serve costs one request that returns nothing, so breadth is cheap.
+ */
 const DEFAULT_LEAGUES: Record<Sport, string[]> = {
   football: [
     "soccer/eng.1",
+    "soccer/eng.2",
+    "soccer/eng.3",
+    "soccer/eng.4",
+    "soccer/eng.fa",
+    "soccer/eng.league_cup",
     "soccer/esp.1",
+    "soccer/esp.2",
     "soccer/ger.1",
+    "soccer/ger.2",
     "soccer/ita.1",
+    "soccer/ita.2",
     "soccer/fra.1",
+    "soccer/fra.2",
+    "soccer/ned.1",
+    "soccer/por.1",
+    "soccer/bel.1",
+    "soccer/tur.1",
+    "soccer/sco.1",
+    "soccer/gre.1",
+    "soccer/aut.1",
+    "soccer/sui.1",
+    "soccer/den.1",
+    "soccer/nor.1",
+    "soccer/swe.1",
+    "soccer/pol.1",
+    "soccer/usa.1",
+    "soccer/mex.1",
+    "soccer/bra.1",
+    "soccer/arg.1",
+    "soccer/jpn.1",
+    "soccer/kor.1",
+    "soccer/aus.1",
+    "soccer/ksa.1",
     "soccer/uefa.champions",
     "soccer/uefa.europa",
+    "soccer/uefa.europa.conf",
+    "soccer/conmebol.libertadores",
   ],
-  basketball: ["basketball/nba", "basketball/wnba", "basketball/nba-development"],
-  cricket: ["cricket/8039", "cricket/8048"],
+  basketball: [
+    "basketball/nba",
+    "basketball/wnba",
+    "basketball/nba-development",
+    "basketball/mens-college-basketball",
+    "basketball/womens-college-basketball",
+  ],
+  cricket: ["cricket/8039", "cricket/8048", "cricket/8047", "cricket/8044"],
   tennis: ["tennis/atp", "tennis/wta"],
 };
+
+/** Concurrent scoreboard requests. Breadth is fine; a burst of 150 is not. */
+const MAX_CONCURRENT_REQUESTS = 8;
 
 function leaguesFor(sport: Sport): string[] {
   const override = process.env[`ESPN_LEAGUES_${sport.toUpperCase()}`]?.trim();
@@ -243,6 +290,27 @@ function daysIn(window: FixtureWindow): Date[] {
   return days;
 }
 
+/** Runs `worker` over `items` with a bounded number in flight at once. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await worker(items[index]!);
+    }
+  });
+
+  await Promise.all(runners);
+  return results;
+}
+
 export function createEspnProvider(): SportsProvider {
   return {
     name: "espn",
@@ -254,11 +322,11 @@ export function createEspnProvider(): SportsProvider {
     async listFixtures(sport, window) {
       const leagues = leaguesFor(sport);
       const days = daysIn(window);
-      const requests = leagues.flatMap((league) =>
-        days.map((day) => fetchLeague(sport, league, day)),
-      );
+      const jobs = leagues.flatMap((league) => days.map((day) => ({ league, day })));
 
-      const settled = await Promise.all(requests);
+      const settled = await mapWithConcurrency(jobs, MAX_CONCURRENT_REQUESTS, (job) =>
+        fetchLeague(sport, job.league, job.day),
+      );
       const seen = new Map<string, Fixture>();
 
       for (const parsed of settled.flat()) {

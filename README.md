@@ -28,10 +28,18 @@ A cycle, in order — skipping whatever is not due:
 1. **Reconcile** any bet whose outcome is unknown, against the operator's own bet history.
 2. **Watch and settle** open bets.
 3. **Read the balance** and compute the bankroll position.
-4. **Research** new fixtures, then **price** the candidates at the operator.
-5. **Plan** stakes and draft bets — if there is room and appetite.
-6. **Review** drafts whose execution window has opened, then place the approved ones.
-7. **Schedule** the next wake-up and stop.
+4. **Read the card** — the fixtures on offer today and the markets beside them,
+   from the configured catalogue (which need not be the account that takes the bets).
+5. **Research** those fixtures deeply — team news *and* what other people are
+   predicting for that specific match — each ending in a named selection, then **price** them.
+6. **Plan** stakes and draft bets — if there is room and appetite.
+7. **Review** drafts whose execution window has opened, then place the approved ones.
+8. **Sweep again** over fixtures it has not yet assessed, if nothing was backed. Up to
+   `MAX_CYCLE_PASSES` times. A pass that finds nothing among a dozen matches has said
+   nothing about the day's other ninety.
+9. **Report** what was placed and every match that was not backed, with the agent that
+   declined it and why.
+10. **Schedule** the next wake-up and stop.
 
 ### The six agents
 
@@ -372,7 +380,7 @@ identity from your Google account and cannot see the sheet until you share it.
 
 ### The tabs
 
-All 14 are created with their headers on first run, so an empty spreadsheet is a
+All 16 are created with their headers on first run, so an empty spreadsheet is a
 valid starting point. To start from one that is already correct:
 
 ```bash
@@ -383,7 +391,7 @@ That is **one file with every tab in it**. In Google Sheets:
 
 > **File → Import → Upload**, pick the `.xlsx`, choose **Replace spreadsheet**.
 
-All 14 tabs arrive together with their headers, frozen and filtered, plus a
+All 16 tabs arrive together with their headers, frozen and filtered, plus a
 `_readme` tab documenting every column and its type. Delete `_readme` if you
 like — the app ignores tabs it does not own.
 
@@ -562,9 +570,15 @@ fails — otherwise a single stake could reach into the reserve.
 | `SPORTS` | all four | Any of `football,basketball,cricket,tennis` |
 | `EXECUTE_BEFORE_KICKOFF_MINUTES` | `25` | How long before kickoff a draft is refreshed, reviewed and placed |
 | `MIN_MINUTES_TO_KICKOFF` | `20` | Matches starting sooner than this are ignored |
-| `MAX_RESEARCH_MATCHES` | `6` | Caps research spend per cycle |
-| `MAX_SHORTLIST` | `3` | Caps candidates carried into planning |
-| `ESPN_LEAGUES_FOOTBALL` | built-in list | Which competitions to follow |
+| `MAX_RESEARCH_MATCHES` | `12` | Caps research spend per pass |
+| `MAX_SHORTLIST` | `8` | Caps candidates carried into planning |
+| `MAX_CYCLE_PASSES` | `5` | Sweeps over fresh fixtures before a cycle accepts that nothing is worth backing |
+| `OPERATOR_SPORTS_PATH` | `/sports/{sport}` | The card page on the staking account; `{sport}` is substituted |
+| `FIXTURE_SOURCE_URL` | the operator | A separate catalogue to read fixtures and prices from. Never staked against |
+| `FIXTURE_SOURCE` | derived from the URL | Name for that catalogue |
+| `FIXTURE_SOURCE_SPORTS_PATH` | `OPERATOR_SPORTS_PATH` | Its per-sport listings path |
+| `SHEETS_CACHE_TTL_MS` | `60000` | How long a spreadsheet tab read is reused |
+| `ESPN_LEAGUES_FOOTBALL` | built-in list | Which competitions the score feed follows |
 | `ESPN_LEAGUES_BASKETBALL` | built-in list | Same, per sport. Also `_CRICKET`, `_TENNIS` |
 
 ### Models
@@ -610,7 +624,8 @@ agent/
   skills/             running-a-cycle
   channels/           telegram (control), dashboard (read-only), eve (HTTP)
   schedules/tick.ts   the only schedule; starts a cycle when work is due
-  tools/              status, control, balance, bets, activity, reports, wake-ups
+  tools/              status, control, balance, bets, activity, reports, wake-ups,
+                      begin_cycle / end_pass / send_cycle_report (the pass loop)
   subagents/
     research/         instructions, skills, list_fixtures, save_research
     planner/          instructions, skills, bankroll, candidates, staking, drafts
@@ -619,6 +634,7 @@ agent/
     watcher/          instructions, skills, open bets, match state, settlement
   lib/                shared by every agent
     bankroll.ts       staking and protection
+    cycle.ts          cycle identity, the pass loop, the rejection ledger, the report
     markets.ts        market vocabulary and settlement
     operator/         browser access, simulated bookmaker, mode dispatch
     sheets/           auth, REST client, schema, typed store

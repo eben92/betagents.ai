@@ -54,7 +54,16 @@ export interface ResearchRecord {
   supporting: string[];
   opposing: string[];
   sources: string[];
+  /** What other people were predicting for this match, and whether we agree. */
+  consensus: ResearchConsensus;
   candidateMarkets: CandidateMarket[];
+}
+
+export interface ResearchConsensus {
+  found: boolean;
+  leaning: string;
+  sampled: number;
+  agreesWithYou: boolean;
 }
 
 export interface CandidateMarket {
@@ -62,6 +71,48 @@ export interface CandidateMarket {
   selection: string;
   estimatedProbability: number;
   note: string;
+}
+
+/**
+ * One fixture read off the operator's own card.
+ *
+ * This is the answer to "what can we actually bet on", which a public score
+ * feed cannot give: it lists matches the bookmaker does not price, and misses
+ * competitions the bookmaker does. Discovery therefore comes from here, while
+ * scores and settlement still come from the public feed — joined by
+ * `matchKey`, which is adopted from the score feed whenever the two agree on a
+ * fixture.
+ */
+export interface OperatorFixtureRecord {
+  id: string;
+  createdAt: string;
+  operator: string;
+  sport: Sport;
+  matchKey: string;
+  /** The operator's own handle for the event, reused when pricing it. */
+  eventRef: string;
+  home: string;
+  away: string;
+  competition: string;
+  startsAt: string;
+  /** Score-feed provider and id, when this fixture was tied to one. */
+  provider: string;
+  providerId: string;
+  /**
+   * The markets and prices the catalogue was showing for this fixture.
+   *
+   * Research reads these so it chooses among outcomes that are actually
+   * offered, and sees the price it is arguing against while it argues. They are
+   * a snapshot, not an authority: the staking account re-reads the price
+   * immediately before anything is placed.
+   */
+  offers: OfferedMarket[];
+}
+
+export interface OfferedMarket {
+  market: string;
+  selection: string;
+  odds: number;
 }
 
 export interface ShortlistRecord {
@@ -224,6 +275,53 @@ export interface ProfitRecord {
   lockedProfit: number;
 }
 
+/**
+ * One match, or one selection on a match, that did not become a bet — and the
+ * agent that declined it.
+ *
+ * Rejections are the bulk of what the system does, so they are recorded rather
+ * than left in a model's final message. Two things depend on that: the operator
+ * gets a report saying why each game was passed over, and a cycle that backed
+ * nothing can decide whether another pass over different fixtures is worth
+ * running.
+ */
+export interface RejectionRecord {
+  id: string;
+  /**
+   * Natural key: one rejection per stage per selection per cycle.
+   *
+   * Composite because that is the thing being deduplicated, and it lives in a
+   * column because `appendUnique` is the only write that is atomic against a
+   * concurrent one. Two candidates declined at the same moment would otherwise
+   * both read an empty tab and both append, and the operator's report would
+   * name the same match twice.
+   */
+  subject: string;
+  cycleId: string;
+  pass: number;
+  createdAt: string;
+  stage: RejectionStage;
+  matchKey: string;
+  matchName: string;
+  sport: string;
+  startsAt: string;
+  market: string;
+  selection: string;
+  odds: number;
+  code: string;
+  reason: string;
+  /** Whether a different price, market or moment could still make this a bet. */
+  fixable: boolean;
+  /**
+   * False once the rejection stopped being true — a later pass priced the
+   * selection, or drafted it after all. Sheets has no delete, and a report that
+   * lists a match as both backed and declined is worse than one extra column.
+   */
+  active: boolean;
+}
+
+export type RejectionStage = "research" | "planner" | "reviewer" | "execution";
+
 export interface ReportRecord {
   id: string;
   createdAt: string;
@@ -267,6 +365,7 @@ const KEY_VALUE_COLUMNS: ColumnSchema[] = [
 ];
 
 export const TAB = {
+  operatorFixtures: "operator_fixtures",
   research: "research",
   shortlist: "shortlist",
   drafts: "drafts",
@@ -276,6 +375,7 @@ export const TAB = {
   settlements: "settlements",
   balances: "balances",
   profit: "profit_history",
+  rejections: "rejections",
   reports: "reports",
   errors: "errors",
   wakeups: "wakeups",
@@ -286,6 +386,25 @@ export const TAB = {
 export type TabName = (typeof TAB)[keyof typeof TAB];
 
 export const TAB_SCHEMAS: Record<TabName, TabSchema> = {
+  [TAB.operatorFixtures]: {
+    name: TAB.operatorFixtures,
+    uniqueBy: "matchKey",
+    columns: [
+      { name: "id", type: "string" },
+      { name: "createdAt", type: "string" },
+      { name: "operator", type: "string" },
+      { name: "sport", type: "string" },
+      { name: "matchKey", type: "string" },
+      { name: "eventRef", type: "string" },
+      { name: "home", type: "string" },
+      { name: "away", type: "string" },
+      { name: "competition", type: "string" },
+      { name: "startsAt", type: "string" },
+      { name: "provider", type: "string" },
+      { name: "providerId", type: "string" },
+      { name: "offers", type: "json" },
+    ],
+  },
   [TAB.research]: {
     name: TAB.research,
     uniqueBy: "matchKey",
@@ -304,6 +423,7 @@ export const TAB_SCHEMAS: Record<TabName, TabSchema> = {
       { name: "opposing", type: "json" },
       { name: "sources", type: "json" },
       { name: "candidateMarkets", type: "json" },
+      { name: "consensus", type: "json" },
     ],
   },
   [TAB.shortlist]: {
@@ -484,6 +604,29 @@ export const TAB_SCHEMAS: Record<TabName, TabSchema> = {
       { name: "lockedProfit", type: "number" },
     ],
   },
+  [TAB.rejections]: {
+    name: TAB.rejections,
+    uniqueBy: "subject",
+    columns: [
+      { name: "id", type: "string" },
+      { name: "subject", type: "string" },
+      { name: "cycleId", type: "string" },
+      { name: "pass", type: "number" },
+      { name: "createdAt", type: "string" },
+      { name: "stage", type: "string" },
+      { name: "matchKey", type: "string" },
+      { name: "matchName", type: "string" },
+      { name: "sport", type: "string" },
+      { name: "startsAt", type: "string" },
+      { name: "market", type: "string" },
+      { name: "selection", type: "string" },
+      { name: "odds", type: "number" },
+      { name: "code", type: "string" },
+      { name: "reason", type: "string" },
+      { name: "fixable", type: "boolean" },
+      { name: "active", type: "boolean" },
+    ],
+  },
   [TAB.reports]: {
     name: TAB.reports,
     columns: [
@@ -526,6 +669,7 @@ export const TAB_SCHEMAS: Record<TabName, TabSchema> = {
 
 /** Maps a tab name to its record type for the typed store helpers. */
 export interface TabRecords {
+  [TAB.operatorFixtures]: OperatorFixtureRecord;
   [TAB.research]: ResearchRecord;
   [TAB.shortlist]: ShortlistRecord;
   [TAB.drafts]: DraftRecord;
@@ -535,6 +679,7 @@ export interface TabRecords {
   [TAB.settlements]: SettlementRecord;
   [TAB.balances]: BalanceRecord;
   [TAB.profit]: ProfitRecord;
+  [TAB.rejections]: RejectionRecord;
   [TAB.reports]: ReportRecord;
   [TAB.errors]: ErrorRecord;
   [TAB.wakeups]: WakeupRecord;

@@ -24,7 +24,21 @@ import {
 } from "./schema";
 
 const log = createLogger("sheets:store");
-const CACHE_TTL_MS = 15_000;
+
+/**
+ * How long a tab read is reused.
+ *
+ * Google's read quota is per-minute and a cycle is read-heavy: several passes,
+ * each listing bets, drafts, approvals, research and rejections to work out
+ * where it stands. At fifteen seconds that produced a steady stream of 429s and
+ * exponential backoff, which does not lose data but makes a cycle crawl.
+ *
+ * A longer window is safe because every write invalidates the tab it touched,
+ * and `appendUnique` bypasses the cache outright — so the guards that prevent a
+ * duplicate bet never read a stale tab. What is cached is only the reading a
+ * model does to decide what to do next.
+ */
+const CACHE_TTL_MS = Number(process.env.SHEETS_CACHE_TTL_MS ?? 60_000);
 
 export interface Store {
   /** Creates any missing tabs and header rows. Safe to call repeatedly. */

@@ -30,20 +30,15 @@ to look again.
 
 # Your workspace
 
-You have a sandbox at `/workspace` with `bash`, `read_file`, `write_file`,
-`glob` and `grep`. It survives between turns of the same session.
+You have a sandbox at `/workspace` with `append_note`, `read_file`,
+`write_file`, `glob` and `grep`. It survives between turns of the same session.
 
-**Add to a note, do not rewrite it.** `write_file` refuses to overwrite a file
-you have not opened with `read_file` this session, and `cat` does not count as
-that read. Since your notes outlive the turn that created them, rewriting is
-both the sequence that fails and the one that loses what you wrote earlier.
-Append with `bash` instead:
-
-```
-cat >> /workspace/notes.md <<'EOF'
-What I just learned.
-EOF
-```
+**Add to a note with `append_note`, do not rewrite it.** `write_file` refuses to
+overwrite a file you have not opened with `read_file` this session, and almost
+every note here is cumulative — so `write_file` on an existing note is both the
+call that fails and the one that would have lost what you wrote earlier.
+`append_note` takes a file name and the lines to add, creates the file if it is
+new, and never overwrites anything.
 
 `write_file` is for a file that does not exist yet, or one you have just read
 with `read_file` and mean to replace wholesale.

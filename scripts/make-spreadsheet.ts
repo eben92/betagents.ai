@@ -5,7 +5,7 @@
  * you can review the layout before handing over credentials, and so you can
  * start from a spreadsheet that is already correct.
  *
- * Produces a single `.xlsx` with all 14 tabs, their header rows, and a `_readme`
+ * Produces a single `.xlsx` with all 16 tabs, their header rows, and a `_readme`
  * tab documenting every column. Google Sheets imports the whole workbook in one
  * step, tabs and all.
  *

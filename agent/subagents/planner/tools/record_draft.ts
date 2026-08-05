@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { getConfig } from "../../../lib/config";
+import { clearRejections, currentCycleId } from "../../../lib/cycle";
 import { newId } from "../../../lib/ids";
 import { potentialReturn } from "../../../lib/money";
 import { getStore, OPEN_BET_STATUSES, TAB, type DraftRecord } from "../../../lib/sheets";
@@ -75,7 +76,7 @@ export default defineTool({
 
     const draft: DraftRecord = {
       id: newId("dft"),
-      cycleId: "",
+      cycleId: await currentCycleId(),
       createdAt: now,
       updatedAt: now,
       researchId: candidate.researchId,
@@ -102,6 +103,10 @@ export default defineTool({
     };
 
     await store.append(TAB.drafts, draft);
+
+    // This match is backed after all: any earlier "not worth it" on it is no
+    // longer true and must not appear in the cycle report beside the draft.
+    await clearRejections(draft.matchKey);
 
     return {
       recorded: true,

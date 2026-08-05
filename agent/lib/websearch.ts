@@ -7,10 +7,18 @@
  * simply not offered the tool. Research then has no way to discover a source,
  * which in practice means it invents URLs and collects 404s.
  *
- * This module backs a replacement for exactly those providers. It queries news
- * RSS, which suits the question this system asks — what happened to this team in
- * the last few days — better than general web search, and needs no API key,
- * no account and no vendor.
+ * This module backs a replacement for exactly those providers, with two search
+ * modes because research needs two different things and one of them cannot be
+ * answered by news:
+ *
+ * - **News** for what happened to a team in the last few days: injuries,
+ *   lineups, postponements.
+ * - **The open web** for what other people are predicting about a fixture —
+ *   preview sites, tipsters, forum threads. None of that is news, so a news
+ *   index cannot find it, and searching news for `"x vs y" prediction reddit`
+ *   returns nothing useful however the query is worded.
+ *
+ * Neither needs an API key, an account or a vendor.
  */
 
 import { createLogger, errorMessage } from "./logger";
@@ -79,7 +87,7 @@ function parseRss(xml: string, limit: number): SearchResult[] {
     const item = match[1];
     if (!item) continue;
 
-    const url = field(item, "link");
+    const url = unwrapRedirect(field(item, "link"));
     const title = toPlainText(field(item, "title"));
     if (!url || !title) continue;
 
@@ -116,28 +124,123 @@ async function fetchRss(url: string): Promise<string | null> {
 }
 
 /**
+ * Search engines hand back tracking redirects rather than the publisher's URL:
+ * DuckDuckGo carries the real address in `uddg`, Bing News in `url`.
+ *
+ * Unwrapping here is what makes a result directly fetchable. Left wrapped, each
+ * one costs `web_fetch` a redirect round-trip that the agent has to notice and
+ * repeat — and a run of them trips a bot check, which is exactly what happened:
+ * ten of ten fetch failures in one cycle were redirect hops, one of them landing
+ * on a captcha page.
+ */
+const REDIRECT_PARAMS = ["uddg", "url", "u"];
+
+export function unwrapRedirect(href: string): string {
+  const raw = href.startsWith("//") ? `https:${href}` : href;
+  try {
+    const url = new URL(raw, "https://duckduckgo.com");
+    for (const param of REDIRECT_PARAMS) {
+      const target = url.searchParams.get(param);
+      if (target && /^https?:\/\//i.test(decodeURIComponent(target))) {
+        return decodeURIComponent(target);
+      }
+    }
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
+/** Results out of a DuckDuckGo HTML page. */
+export function parseDuckDuckGo(html: string, limit: number): SearchResult[] {
+  const results: SearchResult[] = [];
+  const seen = new Set<string>();
+
+  const anchor = /<a[^>]+class="[^"]*result-link|<a[^>]+class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  for (const match of html.matchAll(anchor)) {
+    const href = match[1];
+    const title = toPlainText(match[2] ?? "");
+    if (!href || !title) continue;
+
+    const url = unwrapRedirect(decodeEntities(href));
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
+    seen.add(url);
+
+    let host = "";
+    try {
+      host = new URL(url).hostname.replace(/^www\./, "");
+    } catch {
+      host = "";
+    }
+
+    results.push({ title, url, source: host, publishedAt: "", snippet: "" });
+    if (results.length >= limit) break;
+  }
+
+  return results;
+}
+
+async function fetchPage(url: string): Promise<string | null> {
+  try {
+    const response = await fetch(url, {
+      headers: { "user-agent": USER_AGENT, accept: "text/html,application/xhtml+xml" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      log.debug("search endpoint refused", { url, status: response.status });
+      return null;
+    }
+    return await response.text();
+  } catch (error) {
+    log.debug("search endpoint failed", { url, error: errorMessage(error) });
+    return null;
+  }
+}
+
+/**
+ * General web search, returning links that can be fetched directly.
+ *
+ * DuckDuckGo's keyless HTML endpoints, lite first because it is smaller and
+ * changes shape less often. This is the mode that reaches prediction sites,
+ * tipster pages and forum threads.
+ */
+export async function searchWeb(query: string, limit = 8): Promise<SearchResult[]> {
+  const encoded = encodeURIComponent(query.trim());
+  if (!encoded) return [];
+
+  const endpoints = [
+    `https://lite.duckduckgo.com/lite/?q=${encoded}`,
+    `https://html.duckduckgo.com/html/?q=${encoded}`,
+  ];
+
+  for (const endpoint of endpoints) {
+    const html = await fetchPage(endpoint);
+    if (!html) continue;
+    const results = parseDuckDuckGo(html, limit);
+    if (results.length > 0) return results;
+  }
+
+  return [];
+}
+
+/**
  * Searches recent news for a query.
  *
- * Google News first, Bing News second. Two independent providers because this
- * is the Research agent's only route to evidence: one of them rate-limiting or
- * changing shape should cost result quality, not the whole capability.
+ * Bing News RSS only, then the open web. Google News is deliberately absent:
+ * its RSS `<link>` is an opaque `news.google.com/rss/articles/<base64>` wrapper
+ * that cannot be resolved without fetching it, so every result costs `web_fetch`
+ * a redirect the agent has to notice and repeat — and a run of them lands on a
+ * captcha page. Bing's RSS carries the publisher's own URL, and the web search
+ * below returns direct links, so nothing is lost by dropping it.
  */
 export async function searchNews(query: string, limit = 8): Promise<SearchResult[]> {
   const encoded = encodeURIComponent(query.trim());
   if (!encoded) return [];
 
-  const endpoints = [
-    `https://news.google.com/rss/search?q=${encoded}&hl=en-GB&gl=GB&ceid=GB:en`,
-    `https://www.bing.com/news/search?q=${encoded}&format=RSS`,
-  ];
+  const xml = await fetchRss(`https://www.bing.com/news/search?q=${encoded}&format=RSS`);
+  const results = xml ? parseRss(xml, limit) : [];
+  if (results.length > 0) return results;
 
-  for (const endpoint of endpoints) {
-    const xml = await fetchRss(endpoint);
-    if (!xml) continue;
-
-    const results = parseRss(xml, limit);
-    if (results.length > 0) return results;
-  }
-
-  return [];
+  return searchWeb(query, limit);
 }

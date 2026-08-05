@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { snapshot } from "../../../lib/bankroll";
+import { getConfig } from "../../../lib/config";
 import { impliedProbability, roundMoney } from "../../../lib/money";
 import { getStore, OPEN_BET_STATUSES, TAB } from "../../../lib/sheets";
 import { minutesBetween, parseIso } from "../../../lib/time";
@@ -51,6 +52,13 @@ export default defineTool({
     const latestBalance = balances.at(-1);
     const bank = latestBalance ? await snapshot(latestBalance.balance) : null;
 
+    const probability = draft.estimatedProbability;
+    const breakEven = probability > 0 ? roundMoney(1 / probability) : null;
+    const minimumViable =
+      probability > 0
+        ? roundMoney((1 + getConfig().strategy.minEdge) / probability)
+        : null;
+
     return {
       found: true,
       draft: {
@@ -88,6 +96,14 @@ export default defineTool({
         edgeNow: currentOdds
           ? roundMoney(draft.estimatedProbability * currentOdds - 1)
           : null,
+        // The two thresholds that decide whether a moved price is fixable or
+        // fatal. Above `minimumViableOdds` the bet still works and should be
+        // approved at the current price rather than rejected; below
+        // `breakEvenOdds` there is nothing left to bet on at any stake.
+        breakEvenOdds: breakEven,
+        minimumViableOdds: minimumViable,
+        stillWorthBackingAtCurrentPrice:
+          currentOdds !== null && minimumViable !== null && currentOdds >= minimumViable,
       },
       exposure: {
         openBetsOnThisMatch: sameMatchExposure.map((bet) => ({

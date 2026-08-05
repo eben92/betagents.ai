@@ -190,14 +190,28 @@ async function run<T>(ctx: BrowserContext, args: readonly string[]): Promise<T |
   }
 }
 
-function absolute(path: string): string {
-  const base = getConfig().operator.baseUrl.replace(/\/+$/, "");
-  if (/^https?:\/\//i.test(path)) return path;
-  return `${base}/${path.replace(/^\/+/, "")}`;
+/**
+ * Which site a relative path belongs to.
+ *
+ * The catalogue the system reads fixtures from need not be the account it
+ * stakes with, so a bare `/sports/football` is ambiguous. Naming the site is
+ * how a card gets read from one place while bets go to another.
+ */
+export type Site = "operator" | "catalogue";
+
+function baseFor(site: Site): string {
+  const config = getConfig();
+  const base = site === "catalogue" ? config.fixtureSource.baseUrl : config.operator.baseUrl;
+  return (base || config.operator.baseUrl).replace(/\/+$/, "");
 }
 
-export async function open(ctx: BrowserContext, url: string): Promise<PageText> {
-  await run(ctx, ["open", absolute(url)]);
+function absolute(path: string, site: Site): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${baseFor(site)}/${path.replace(/^\/+/, "")}`;
+}
+
+export async function open(ctx: BrowserContext, url: string, site: Site = "operator"): Promise<PageText> {
+  await run(ctx, ["open", absolute(url, site)]);
   return readPage(ctx);
 }
 

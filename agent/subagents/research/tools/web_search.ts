@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { errorMessage } from "../../../lib/logger";
 import { modelSpecFor, toolOutputBudgetFor } from "../../../lib/model";
-import { providerHasNativeWebSearch, searchNews } from "../../../lib/websearch";
+import { providerHasNativeWebSearch, searchNews, searchWeb } from "../../../lib/websearch";
 
 /**
  * `web_search`, but only when the model cannot search for itself.
@@ -30,15 +30,33 @@ export default defineDynamic({
 
       return defineTool({
         description:
-          "Search recent news for a query and get back headlines, sources, dates and links. Use it to find sources worth reading, then read them with web_fetch. Search for the specific thing you need — a team's injury news, a confirmed lineup, a postponement — not the fixture in general.",
+          "Search the web for a query and get back titles, sources and links to read with web_fetch. Use kind: \"news\" for what happened in the last few days — injuries, lineups, a postponement. Use the default web search for everything else, including what other people are predicting about a fixture.",
         inputSchema: z.object({
           query: z.string().describe("What to search for, as you would type it."),
+          kind: z
+            .enum(["web", "news"])
+            .default("web")
+            .describe(
+              "web searches the open internet, which is where preview, tipster and forum pages live. news searches recent reporting, which is where team news lives.",
+            ),
           limit: z.number().int().min(1).max(20).optional().describe("How many results. Defaults to 8."),
         }),
 
         async execute(input) {
           try {
-            const results = await searchNews(input.query, input.limit ?? 8);
+            const limit = input.limit ?? 8;
+            // Fall back across modes rather than returning nothing: an empty
+            // search sends this agent back to inventing URLs.
+            let results =
+              input.kind === "news"
+                ? await searchNews(input.query, limit)
+                : await searchWeb(input.query, limit);
+            if (results.length === 0) {
+              results =
+                input.kind === "news"
+                  ? await searchWeb(input.query, limit)
+                  : await searchNews(input.query, limit);
+            }
 
             if (results.length === 0) {
               return {

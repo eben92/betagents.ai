@@ -3,7 +3,18 @@ import { z } from "zod";
 
 import { computeStake, snapshot } from "../../../lib/bankroll";
 import { getConfig } from "../../../lib/config";
+import { recordRejection } from "../../../lib/cycle";
 import { getStore, TAB } from "../../../lib/sheets";
+
+/** Maps a declined stake onto the rejection code that report readers scan for. */
+function declineCode(declined: string): { code: string; fixable: boolean } {
+  if (declined.includes("edge")) return { code: "edge_below_minimum", fixable: true };
+  if (declined.includes("confidence")) return { code: "confidence_below_minimum", fixable: false };
+  if (declined.includes("Kelly")) return { code: "price_too_short", fixable: true };
+  if (declined.includes("below the")) return { code: "stake_below_minimum", fixable: false };
+  if (declined.includes("odds")) return { code: "no_price", fixable: true };
+  return { code: "bankroll_halted", fixable: false };
+}
 
 /**
  * Sizing lives in code, not in the model.
@@ -54,6 +65,31 @@ export default defineTool({
       multiplier: input.conviction,
       remainingOpportunities: input.remainingOpportunities,
     });
+
+    // A declined stake is a rejection of that selection, recorded here rather
+    // than left to the planner to remember. The operator's report is built from
+    // these rows, and the reason is exact at this point and vague later.
+    if (decision.declined) {
+      const candidate = (await store.list(TAB.shortlist)).find(
+        (entry) => entry.id === input.shortlistId,
+      );
+      if (candidate) {
+        const { code, fixable } = declineCode(decision.declined);
+        await recordRejection({
+          stage: "planner",
+          matchKey: candidate.matchKey,
+          matchName: candidate.matchName,
+          sport: candidate.sport,
+          startsAt: candidate.startsAt,
+          market: candidate.market,
+          selection: candidate.selection,
+          odds: input.odds,
+          code,
+          reason: decision.declined,
+          fixable,
+        });
+      }
+    }
 
     return {
       shortlistId: input.shortlistId,

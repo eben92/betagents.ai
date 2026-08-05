@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { errorMessage } from "../../../lib/logger";
 import { modelSpecFor, toolOutputBudgetFor } from "../../../lib/model";
-import { providerHasNativeWebSearch, searchNews } from "../../../lib/websearch";
+import { providerHasNativeWebSearch, searchNews, searchWeb } from "../../../lib/websearch";
 
 /**
  * The Research agent's `web_search`, for the same reason and on the same terms
@@ -27,12 +27,28 @@ export default defineDynamic({
           "Search recent news for a query and get back headlines, sources, dates and links. Use it to re-check the specific thing this draft depends on — a fitness doubt, a confirmed lineup, a postponement — then read what matters with web_fetch.",
         inputSchema: z.object({
           query: z.string().describe("What to search for, as you would type it."),
+          kind: z
+            .enum(["web", "news"])
+            .default("news")
+            .describe(
+              "news searches recent reporting, which is where a late injury or a postponement shows up. web searches the open internet.",
+            ),
           limit: z.number().int().min(1).max(20).optional().describe("How many results. Defaults to 8."),
         }),
 
         async execute(input) {
           try {
-            const results = await searchNews(input.query, input.limit ?? 8);
+            const limit = input.limit ?? 8;
+            let results =
+              input.kind === "web"
+                ? await searchWeb(input.query, limit)
+                : await searchNews(input.query, limit);
+            if (results.length === 0) {
+              results =
+                input.kind === "web"
+                  ? await searchNews(input.query, limit)
+                  : await searchWeb(input.query, limit);
+            }
 
             if (results.length === 0) {
               return {

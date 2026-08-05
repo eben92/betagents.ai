@@ -38,7 +38,22 @@ const TMPDIR = `${BROWSER_ROOT}/tmp`;
 const PLAYWRIGHT_BROWSERS_PATH = `${BROWSER_ROOT}/playwright`;
 
 /** Bumped when the script below changes, to force a rebuild of cached images. */
-const BROWSER_INSTALL_REVISION = "1";
+const BROWSER_INSTALL_REVISION = "2";
+
+/**
+ * What `installAgentBrowser` is asked to do: fetch the CLI, and nothing else.
+ *
+ * Not its browser — that is the Chrome for Testing download with no ARM64 build.
+ * Not its system dependencies either: `playwright install --with-deps` below
+ * installs the libraries this exact Chromium build was linked against, so
+ * letting eve install its own list first means running `apt-get update` twice
+ * against the same VM. On a slow network that alone cost seven minutes of every
+ * template build, and it does not install anything the browser actually needs.
+ */
+const AGENT_BROWSER_INSTALL = {
+  installBrowser: false,
+  installSystemDependencies: false,
+} as const;
 
 const INSTALL_CHROMIUM = [
   "set -e",
@@ -66,16 +81,14 @@ export default defineSandbox({
 
   revalidationKey: () =>
     [
-      agentBrowserRevalidationKey({ installBrowser: false }),
+      agentBrowserRevalidationKey(AGENT_BROWSER_INSTALL),
       `playwright-chromium-${BROWSER_INSTALL_REVISION}`,
     ].join(":"),
 
   async bootstrap({ use }) {
     const sandbox = await use();
 
-    // agent-browser itself, plus the Chromium system libraries eve knows about.
-    // Not its browser: that is the download with no ARM64 build.
-    await installAgentBrowser(sandbox, { installBrowser: false });
+    await installAgentBrowser(sandbox, AGENT_BROWSER_INSTALL);
 
     const result = await sandbox.run({ command: INSTALL_CHROMIUM });
     if (result.exitCode !== 0) {

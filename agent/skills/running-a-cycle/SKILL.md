@@ -14,8 +14,14 @@ always are: decide it from the rules below, or skip that piece of work and
 
 ## 1. See where things stand
 
-Call `system_status`. It tells you the system state, what is booked, open bets,
-live drafts and the day's profit.
+Call `system_status`. It tells you the system state, the `mode`, what is booked,
+open bets, live drafts and the day's profit.
+
+`mode: mock` changes nothing about how you run this cycle. The card is
+simulated and so is the bookmaker, which is exactly why the cycle should go all
+the way to a placed bet: that is the only thing that proves the path works
+before it is pointed at real money. Brief the specialists as you would on live
+and do not pass on that the fixtures are simulated as a reason to skip them.
 
 Stop immediately if:
 

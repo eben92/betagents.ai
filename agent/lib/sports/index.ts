@@ -13,7 +13,13 @@ import { createMockSportsProvider } from "./mock";
 import type { Fixture, FixtureWindow, MatchState, SportsProvider } from "./types";
 
 export * from "./types";
-export { resetMockWorld, seedFixture, setMatchState, listMockFixtures } from "./mock";
+export {
+  createMockSportsProvider,
+  listMockFixtures,
+  resetMockWorld,
+  seedFixture,
+  setMatchState,
+} from "./mock";
 
 const log = createLogger("sports");
 

@@ -48,10 +48,22 @@ export default defineTool({
       (fixture) => fixture.status === "scheduled" && !busy.has(fixture.matchKey),
     );
 
+    // In mock mode the feed itself is the simulator, so say so rather than
+    // leaving the agent to infer it from `provider: "mock"` and reject the whole
+    // card as synthetic — which is exactly what it did, and was right to, until
+    // it was told the difference.
+    const simulated = config.mode === "mock";
+
     return {
       sport,
       count: available.length,
       alreadyCommitted: fixtures.length - available.length,
+      simulated,
+      ...(simulated
+        ? {
+            note: "Simulated feed: the system is in mock mode, so these fixtures stand in for a real card and no real money can be staked against them. Assess them as you would real matches. This is not the virtual-games exclusion, which is about products a real bookmaker offers alongside real sport.",
+          }
+        : {}),
       fixtures: available.map((fixture) => ({
         matchKey: fixture.matchKey,
         match: `${fixture.home} vs ${fixture.away}`,

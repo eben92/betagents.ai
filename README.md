@@ -153,6 +153,29 @@ by the framework at session end or server shutdown, not the moment an agent
 finishes. Releasing the browser inside it is the lever that exists, and it is
 the one that accounts for nearly all the memory.
 
+### How many VMs a host ends up with
+
+The two levers that decide this are both in
+[`agent/agent.ts`](agent/agent.ts), and eve's defaults are wrong for a system
+that runs on a schedule forever.
+
+`experimental.subagentPersistentSessions: true` reuses each specialist's session
+across delegations. Unset — eve's default — *"delegated children run as one-shot
+tasks"*: one cycle asks Execution for a balance, then for prices, then to place a
+bet, and that is three sessions and three separate VMs. Reuse is also the better
+behaviour, since Execution keeps its logged-in browser and its placement journal
+between delegations instead of starting over.
+
+`limits.sessionTimeoutMs` is 24 hours here, down from eve's 30-day default. A
+sandbox lives as long as its session, so this is the ceiling on how long a VM can
+sit on the host. Nothing of record is lost when a session ends: the spreadsheet
+is the state, and `/workspace` only ever holds a working notebook.
+
+With both set, a full three-eval run holds **three** VMs. Note that a killed
+process — `kill -9`, a crash, a closed laptop — never reaches eve's shutdown
+path, so it strands VMs that nothing later reclaims. `msb list` shows them and
+`msb rm -f` clears them.
+
 Orchestration is model-driven; the **irreversible steps are not**. Every
 decision that moves money lives in a tool, in ordinary TypeScript:
 

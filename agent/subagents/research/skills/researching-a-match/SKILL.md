@@ -52,6 +52,17 @@ Watch for these specifically:
 If you could not retrieve real team news, that is `thin`, whatever your instinct
 about the match says.
 
+**A simulated card is the exception.** When `list_fixtures` reported
+`simulated: true`, the teams do not exist and no amount of searching will
+produce news about them — the absence is the simulation, not weak evidence.
+Applying the ceiling above would cap every confidence below the threshold a
+stake needs, so mock mode could never place a bet and would never test the one
+path that matters. Judge those fixtures on what you do have — the competition,
+the fixture, the prices when they arrive — call the dataQuality `adequate`, and
+say in your reasoning that the evidence is simulated. This applies only when the
+tool told you the feed is simulated; never infer it from a name you do not
+recognise.
+
 ## 5. Nominate markets, or do not
 
 Only propose a selection when your probability differs from a fair price by

@@ -81,6 +81,57 @@ export function listMockFixtures(): Fixture[] {
   return [...world.fixtures.values()];
 }
 
+/**
+ * The slate an empty mock world fills itself with, as offsets from now.
+ *
+ * Deliberately spread either side of the execution window: one match close
+ * enough to kick off soon, several later today, and one tomorrow. A slate that
+ * was entirely hours away would never reach `place_bet`, and one entirely
+ * imminent would never produce a draft that waits.
+ */
+const MOCK_SLATE: ReadonlyArray<{
+  sport: Sport;
+  home: string;
+  away: string;
+  league: string;
+  minutesFromNow: number;
+}> = [
+  { sport: "football", home: "Northbridge United", away: "Easthaven Rovers", league: "football/mock-premier", minutesFromNow: 40 },
+  { sport: "football", home: "Kingsport Athletic", away: "Marlowe Town", league: "football/mock-premier", minutesFromNow: 180 },
+  { sport: "football", home: "Ridgeway City", away: "Portvale Wanderers", league: "football/mock-championship", minutesFromNow: 360 },
+  { sport: "basketball", home: "Harbour Falcons", away: "Summit Grizzlies", league: "basketball/mock-league", minutesFromNow: 120 },
+  { sport: "basketball", home: "Delta Chargers", away: "Ironside Kings", league: "basketball/mock-league", minutesFromNow: 1_500 },
+  { sport: "tennis", home: "A. Marchetti", away: "J. Okonkwo", league: "tennis/mock-open", minutesFromNow: 90 },
+  { sport: "cricket", home: "Cape Mariners", away: "Fenwick Invitational", league: "cricket/mock-series", minutesFromNow: 300 },
+];
+
+/**
+ * Fills an empty world with {@link MOCK_SLATE}.
+ *
+ * On unless `MOCK_AUTO_SEED=false`, because mock mode is meant to be a working
+ * simulated bookmaker: with no fixtures the only outcome a cycle can reach is
+ * "nothing on today", and the placement path — the one that has to be right
+ * before a real operator is connected — is never exercised.
+ *
+ * The tests turn it off. They seed the exact fixtures their assertions depend
+ * on, and a surprise slate underneath would make "no candidates" untestable.
+ */
+function seedSlateIfEmpty(): void {
+  if (process.env.MOCK_AUTO_SEED === "false") return;
+  if (world.fixtures.size > 0) return;
+
+  const now = Date.now();
+  for (const entry of MOCK_SLATE) {
+    seedFixture({
+      sport: entry.sport,
+      home: entry.home,
+      away: entry.away,
+      league: entry.league,
+      startsAt: new Date(now + entry.minutesFromNow * 60_000),
+    });
+  }
+}
+
 export function createMockSportsProvider(): SportsProvider {
   return {
     name: "mock",
@@ -90,6 +141,8 @@ export function createMockSportsProvider(): SportsProvider {
     },
 
     async listFixtures(sport, window) {
+      seedSlateIfEmpty();
+
       return [...world.fixtures.values()]
         .filter((fixture) => fixture.sport === sport)
         .filter((fixture) => {

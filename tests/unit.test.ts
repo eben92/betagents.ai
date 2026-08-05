@@ -20,8 +20,9 @@ import {
   toolOutputBudgetFor,
 } from "../agent/lib/model";
 import { edge, kellyFraction, parseOdds } from "../agent/lib/money";
-import type { MatchState } from "../agent/lib/sports";
+import { createMockSportsProvider, type MatchState } from "../agent/lib/sports";
 import { dayKey, nextMidnight, startOfDay, zonedTimeToUtc } from "../agent/lib/time";
+import { providerHasNativeWebSearch } from "../agent/lib/websearch";
 import { setupTest, teardownTest } from "./harness";
 
 afterEach(teardownTest);
@@ -449,5 +450,50 @@ describe("Telegram authorisation", () => {
   it("accepts a private chat even when reports go to a channel", () => {
     setupTest(TELEGRAM);
     expect(rejectionFor(message("222", { id: "222", type: "private" }))).toBeNull();
+  });
+});
+
+describe("mock sports world", () => {
+  it("fills an untouched world so mock mode has something to bet on", async () => {
+    setupTest({ MOCK_AUTO_SEED: "true" });
+    const provider = createMockSportsProvider();
+    const found = await provider.listFixtures("football", {
+      from: new Date(Date.now() - 60_000),
+      to: new Date(Date.now() + 24 * 60 * 60_000),
+    });
+    expect(found.length).toBeGreaterThan(0);
+    expect(found.every((fixture: { sport: string }) => fixture.sport === "football")).toBe(true);
+  });
+
+  it("leaves a reset world alone, so a test can assert on no candidates", async () => {
+    setupTest();
+    const provider = createMockSportsProvider();
+    const found = await provider.listFixtures("football", {
+      from: new Date(Date.now() - 60_000),
+      to: new Date(Date.now() + 24 * 60 * 60_000),
+    });
+    expect(found).toEqual([]);
+  });
+});
+
+describe("web search provider gate", () => {
+  it("stands aside for providers that search natively", () => {
+    // eve's built-in is the model's own ranked search; nothing here beats it.
+    expect(providerHasNativeWebSearch("anthropic:claude-sonnet-4-5")).toBe(true);
+    expect(providerHasNativeWebSearch("openai:gpt-5")).toBe(true);
+    expect(providerHasNativeWebSearch("google:gemini-2.5-flash")).toBe(true);
+  });
+
+  it("supplies a search tool for providers that do not", () => {
+    // Without this, Research is offered no web_search at all and resorts to
+    // guessing URLs — which is exactly what it did.
+    expect(providerHasNativeWebSearch("deepseek:deepseek-v4-flash")).toBe(false);
+    expect(providerHasNativeWebSearch("kimi:kimi-k2-0905-preview")).toBe(false);
+    expect(providerHasNativeWebSearch("openrouter:qwen/qwen-2.5-72b")).toBe(false);
+  });
+
+  it("accepts the slash form, since a model id is written that way everywhere else", () => {
+    expect(providerHasNativeWebSearch("google/gemini-2.5-flash")).toBe(true);
+    expect(providerHasNativeWebSearch("deepseek/deepseek-chat")).toBe(false);
   });
 });

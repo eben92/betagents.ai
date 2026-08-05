@@ -60,6 +60,9 @@ const BASE_ENV: Record<string, string> = {
   MIN_MINUTES_TO_KICKOFF: "20",
   EXECUTE_BEFORE_KICKOFF_MINUTES: "25",
   MAX_RESEARCH_MATCHES: "6",
+  // Tests seed the fixtures their assertions depend on; a slate appearing
+  // underneath them would make "no candidates" impossible to assert.
+  MOCK_AUTO_SEED: "false",
 };
 
 const OWNED_KEYS = [

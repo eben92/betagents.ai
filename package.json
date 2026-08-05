@@ -10,23 +10,35 @@
     "build": "eve build",
     "dev": "eve dev",
     "start": "eve start",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "tsc && vitest run",
+    "eval": "eve eval",
+    "spreadsheet": "tsx scripts/make-spreadsheet.ts",
+    "spreadsheet:verify": "tsx scripts/verify-spreadsheet.ts"
   },
   "dependencies": {
+    "@agent-browser/eve": "^0.33.2",
+    "@ai-sdk/anthropic": "^4.0.29",
+    "@ai-sdk/deepseek": "^3.0.21",
+    "@ai-sdk/google": "^4.0.33",
+    "@ai-sdk/openai": "^4.0.29",
+    "@ai-sdk/openai-compatible": "^3.0.22",
     "@vercel/connect": "0.4.3",
-    "ai": "^7.0.38",
+    "ai": "^7.0.51",
     "eve": "^0.30.2",
+    "just-bash": "^3.2.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "24.x",
-    "typescript": "7.0.2"
-  },
-  "overrides": {
-    "ai": "^7.0.38"
+    "exceljs": "^4.4.0",
+    "tsx": "^4.23.5",
+    "typescript": "7.0.2",
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": "24.x"
   }
-
 }

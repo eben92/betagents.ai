@@ -7,6 +7,11 @@ description: Use when a scheduled wake-up fires and you need to run one betting 
 A cycle does the work that is due and stops. Most cycles do one thing. A cycle
 that touches all five agents is unusual, not the goal.
 
+**Nobody is watching this run.** It is a cron tick, and you have no tool for
+asking, so that is not one of your options. Whatever the uncertainty, two others
+always are: decide it from the rules below, or skip that piece of work and
+`send_report` what you skipped. Then finish the cycle.
+
 ## 1. See where things stand
 
 Call `system_status`. It tells you the system state, what is booked, open bets,

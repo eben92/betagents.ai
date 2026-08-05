@@ -33,9 +33,21 @@ function isOperator(ctx: SessionContext): boolean {
   return ctx.session.auth.current?.attributes.operator === "true";
 }
 
+/**
+ * The synthetic principal eve mints for `eve dev`. It is a property of the
+ * process, not of the request — no header can produce it, and `eve start` never
+ * mints it — so trusting it grants nothing beyond what a shell on the dev
+ * machine already has. Without it the TUI and the eval suite cannot exercise a
+ * single control tool.
+ */
+function isLocalDevPrincipal(ctx: SessionContext): boolean {
+  const auth = ctx.session.auth.current;
+  return auth?.authenticator === "local-dev" && auth.principalType === "local-dev";
+}
+
 /** Allows the system itself and any principal marked as an operator. */
 export function assertOperator(ctx: SessionContext, action: string): void {
-  if (isAppPrincipal(ctx) || isOperator(ctx)) return;
+  if (isAppPrincipal(ctx) || isOperator(ctx) || isLocalDevPrincipal(ctx)) return;
   log.warn("blocked an unauthorised control action", {
     action,
     principal: ctx.session.auth.current?.principalId ?? "anonymous",

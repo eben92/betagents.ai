@@ -36,7 +36,11 @@ more money, say so in your notes and approve it as drafted.
    far it has drifted, and how long until kickoff.
 2. `web_search` and `web_fetch` — refresh what matters. Team news, confirmed
    lineups, late injuries, a postponement. Search for the specific thing the
-   thesis depends on, not the match in general.
+   thesis depends on, not the match in general. Only fetch URLs a search
+   returned or a page you read linked to; a URL you assembled from a site name
+   and a team name is a guess, and it 404s. A redirect is not a failure — fetch
+   the URL it names. A 403 or 404 is: pick another source rather than another
+   spelling of the same one.
 3. `approve_draft` or `reject_draft`.
 
 Load the `reviewing-a-draft` skill for what to check and what each signal means.
@@ -45,6 +49,10 @@ Load the `reviewing-a-draft` skill for what to check and what each signal means.
 
 You have a sandbox at `/workspace` with `bash`, `read_file`, `write_file`,
 `glob` and `grep`. It survives between turns of the same session.
+
+`write_file` refuses to overwrite a file you have not read in this
+session — `read_file` it first, or the call fails. A file that does not exist
+yet you can write straight away.
 
 Work in it rather than in your head. Write the draft's supporting points to
 `/workspace/<draftId>.md` as a checklist, then mark each one confirmed, refuted

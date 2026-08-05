@@ -23,6 +23,7 @@ import {
 } from "../agent/lib/operator";
 import { OPEN_BET_STATUSES, setStore, TAB } from "../agent/lib/sheets";
 import { setMatchState } from "../agent/lib/sports";
+import { claimDue, schedule } from "../agent/lib/wakeups";
 import { getLockedProfit, startDay } from "../agent/lib/state";
 import { dayKey } from "../agent/lib/time";
 
@@ -1047,5 +1048,44 @@ describe("secret redaction", () => {
   it("leaves ordinary configuration alone", async () => {
     setupTest({ OPERATOR_BASE_URL: "https://example.test" });
     expect(redactText("opened https://example.test/login")).toMatch(/example\.test/);
+  });
+});
+
+describe("wake-ups", () => {
+  it("collapses a repeated booking for the same kind and minute", async () => {
+    const { store } = setupTest();
+    const dueAt = new Date(Date.now() + 60 * 60_000);
+
+    await schedule({ kind: "daily", dueAt, reason: "start of the betting day" });
+    await schedule({ kind: "daily", dueAt, reason: "start of the betting day" });
+
+    // The tick books the day boundary on every cycle regardless of what the
+    // cycle did, so this collapsing is what makes that free.
+    expect((await store.list(TAB.wakeups)).filter((row) => row.kind === "daily")).toHaveLength(1);
+  });
+
+  it("keeps a second booking at a different minute", async () => {
+    const { store } = setupTest();
+    const first = new Date(Date.now() + 60 * 60_000);
+    const later = new Date(first.getTime() + 120_000);
+
+    await schedule({ kind: "daily", dueAt: first, reason: "today" });
+    await schedule({ kind: "daily", dueAt: later, reason: "tomorrow" });
+
+    expect((await store.list(TAB.wakeups)).filter((row) => row.kind === "daily")).toHaveLength(2);
+  });
+
+  it("does not treat a claimed wake-up as still booked", async () => {
+    const { store } = setupTest();
+    const dueAt = new Date(Date.now() - 60_000);
+
+    await schedule({ kind: "daily", dueAt, reason: "start of the betting day" });
+    const claimed = await claimDue(new Date());
+    expect(claimed).toHaveLength(1);
+
+    // A claimed row is no longer pending, so the tick's post-cycle booking
+    // creates the next one instead of silently colliding with the old.
+    await schedule({ kind: "daily", dueAt, reason: "start of the betting day" });
+    expect((await store.list(TAB.wakeups)).filter((row) => row.kind === "daily")).toHaveLength(2);
   });
 });

@@ -4,8 +4,10 @@
  * that defines a betting day.
  */
 
+import type { TelegramChatType } from "eve/channels/telegram";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { rejectionFor } from "../agent/channels/telegram";
 import { computeStake, lockedProfitAfter, type BankrollSnapshot } from "../agent/lib/bankroll";
 import { describeSelection, isValidSelection, settleSelection } from "../agent/lib/markets";
 import {
@@ -398,5 +400,54 @@ describe("context window management", () => {
     for (const agent of ["CONTROL", "RESEARCH", "PLANNER", "REVIEWER", "EXECUTION", "WATCHER"] as const) {
       expect(contextWindowFor(agent)).toBeGreaterThan(32_000);
     }
+  });
+});
+
+describe("Telegram authorisation", () => {
+  const TELEGRAM = {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_CHAT_ID: "-1004473859878",
+    TELEGRAM_ALLOWED_USER_IDS: "111,222",
+  };
+
+  function message(from: string | undefined, chat: { id: string; type: TelegramChatType }) {
+    return {
+      chat: { id: chat.id, type: chat.type },
+      from: from === undefined ? undefined : { id: from, isBot: false },
+    };
+  }
+
+  it("denies everyone when the allow-list is empty", () => {
+    setupTest({ ...TELEGRAM, TELEGRAM_ALLOWED_USER_IDS: "" });
+    expect(rejectionFor(message("111", { id: "111", type: "private" }))).toBe("no-allow-list");
+  });
+
+  it("rejects a user who is not on the list", () => {
+    setupTest(TELEGRAM);
+    expect(rejectionFor(message("999", { id: "999", type: "private" }))).toBe("unauthorised-user");
+  });
+
+  it("rejects a channel post, which carries no sender", () => {
+    setupTest(TELEGRAM);
+    expect(rejectionFor(message(undefined, { id: "-1004473859878", type: "channel" }))).toBe(
+      "unauthorised-user",
+    );
+  });
+
+  it("accepts an allowed user in the configured group", () => {
+    setupTest({ ...TELEGRAM, TELEGRAM_CHAT_ID: "-500" });
+    expect(rejectionFor(message("111", { id: "-500", type: "group" }))).toBeNull();
+  });
+
+  it("rejects an allowed user in some other group", () => {
+    setupTest({ ...TELEGRAM, TELEGRAM_CHAT_ID: "-500" });
+    expect(rejectionFor(message("111", { id: "-600", type: "group" }))).toBe("unexpected-chat");
+  });
+
+  // The report destination is often a channel, and eve never dispatches channel
+  // posts. Tying commands to it would leave the system with no way in.
+  it("accepts a private chat even when reports go to a channel", () => {
+    setupTest(TELEGRAM);
+    expect(rejectionFor(message("222", { id: "222", type: "private" }))).toBeNull();
   });
 });

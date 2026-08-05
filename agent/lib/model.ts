@@ -153,7 +153,18 @@ export function modelFor(agent: AgentName): ResolvedModel {
 
 /** The raw spec for one agent, for reporting. Never resolves credentials. */
 export function modelSpecFor(agent: AgentName): string {
-  return process.env[`MODEL_${agent}`]?.trim() || DEFAULTS[agent];
+  const configured = process.env[`MODEL_${agent}`]?.trim();
+  if (configured) return configured;
+
+  // The judge is a test fixture, not an agent. Sending it to its own default
+  // would demand a second provider's key purely to run `npm run eval`, so it
+  // borrows the orchestrator's model unless it is named explicitly.
+  if (agent === "JUDGE") {
+    const control = process.env.MODEL_CONTROL?.trim();
+    if (control) return control;
+  }
+
+  return DEFAULTS[agent];
 }
 
 /**

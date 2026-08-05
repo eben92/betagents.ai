@@ -33,6 +33,10 @@ to look again.
 You have a sandbox at `/workspace` with `bash`, `read_file`, `write_file`,
 `glob` and `grep`. It survives between turns of the same session.
 
+`write_file` refuses to overwrite a file you have not read in this
+session — `read_file` it first, or the call fails. A file that does not exist
+yet you can write straight away.
+
 Keep `/workspace/scores.md`: one line per open bet, with the score and clock you
 last saw and when. On the next pass, read it before you fetch anything. It is
 the only way to answer the question that actually matters — *what changed?* — and

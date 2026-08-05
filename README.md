@@ -247,6 +247,13 @@ orchestrator delegates in the right order, refuses to skip a review, and stops
 when told to. They run against the simulated bookmaker, so they cannot move real
 money either.
 
+The judge borrows `MODEL_CONTROL` unless `MODEL_JUDGE` names something else, so
+running them needs one provider key rather than two.
+
+Delete `.eve/` between runs when you have changed a sandbox definition. eve keeps
+a source snapshot per build, and a stale one will happily bootstrap a second VM
+from the code you just replaced, alongside the new one.
+
 ---
 
 ## Self-host on a VPS
@@ -281,9 +288,27 @@ For live betting the Execution agent needs a browser VM. It runs
 [microsandbox](https://microsandbox.dev), which requires **Linux with KVM** or
 macOS on Apple Silicon. Install microsandbox on the host; the VM image, Chromium
 and agent-browser are provisioned automatically on first use and cached against
-the agent-browser version.
+what was installed.
+
+The browser is **Playwright's Chromium**, not the Chrome for Testing build
+agent-browser vendors by default. Chrome for Testing publishes no Linux ARM64
+build, and a microsandbox VM on Apple Silicon is Linux ARM64, so the stock
+bootstrap cannot work on a Mac at all. Playwright publishes both architectures,
+which also means development and the server run the same browser rather than two.
+See [`agent/subagents/execution/sandbox.ts`](agent/subagents/execution/sandbox.ts).
+
+Keep the microsandbox npm package and the installed `msb` runtime on the **same
+version**. They share a database, and a mismatch fails every sandbox with
+`Migration file of version ... is missing`. Check with `msb --version`.
 
 Mock mode needs none of this — no browser, no VM, no KVM.
+
+### Node
+
+**Node 24.19.0 or newer**, pinned in `.nvmrc`. Not a preference: 24.18.0 carries
+a V8 bug that aborts the process outright —
+`Check failed: static_cast<int64_t>(amount_before) >= -delta` in
+`Heap::OldArrayBufferBytes` — which killed long agent runs mid-cycle.
 
 ---
 
@@ -371,6 +396,13 @@ curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
 
 **`TELEGRAM_ALLOWED_USER_IDS` is the authorisation boundary for the whole
 system.** An empty list denies everyone, deliberately.
+
+`TELEGRAM_CHAT_ID` is where **reports go**, and it may be a channel. It is not
+where commands must come from: Telegram delivers channel posts without a sender,
+and eve never dispatches them to an agent, so a channel can only ever receive.
+**Command the bot in a direct message.** A group or supergroup works too, but
+only the one `TELEGRAM_CHAT_ID` names, so an allowed user cannot be talked into
+driving the system from a group full of strangers.
 
 Commands: `/status`, `/balance`, `/bets`, `/drafts`, `/today`, `/reports`,
 `/start`, `/stop`, `/pause`, `/resume`, and "run a cycle now". Plain questions
@@ -517,7 +549,7 @@ fails — otherwise a single stake could reach into the reserve.
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `MODEL_<AGENT>_CONTEXT` | from `lib/model.ts` | Override a model's context window in tokens |
-| `MODEL_JUDGE` | `anthropic:claude-sonnet-4-5` | Grades `npm run eval` only |
+| `MODEL_JUDGE` | `MODEL_CONTROL` | Grades `npm run eval` only |
 | `<NAME>_BASE_URL` | — | OpenAI-compatible endpoint for a provider named `<NAME>` |
 | `<NAME>_API_KEY` | — | Its key. Redacted from logs automatically |
 

@@ -26,6 +26,18 @@ const log = createLogger("schedule:tick");
 let running = false;
 let seeded = false;
 
+/**
+ * Books the next midnight in the configured timezone. Idempotent: `schedule`
+ * collapses repeated calls for the same kind and minute into one row.
+ */
+async function bookTheDayBoundary(now: Date): Promise<void> {
+  await schedule({
+    kind: "daily",
+    dueAt: nextMidnight(now, getConfig().strategy.timezone),
+    reason: "start of the betting day",
+  });
+}
+
 /** The brief handed to the root agent. The cycle skill supplies the procedure. */
 function brief(trigger: string, reasons: string[]): string {
   return [
@@ -59,12 +71,7 @@ export default defineSchedule({
 
           const claimed = await claimDue(now);
           if (claimed.length === 0) {
-            // Nothing left to claim: make sure the day boundary stays booked.
-            await schedule({
-              kind: "daily",
-              dueAt: nextMidnight(now, getConfig().strategy.timezone),
-              reason: "start of the betting day",
-            });
+            await bookTheDayBoundary(now);
             return;
           }
 
@@ -100,6 +107,17 @@ export default defineSchedule({
               "failed",
             );
             throw error;
+          } finally {
+            // Whatever the cycle did — booked its own wake-ups, threw, or parked
+            // on a question nobody will answer — the day boundary is booked here.
+            //
+            // Without this the system's continued existence depends on the model
+            // remembering to call `schedule_wakeup`. One forgotten call and there
+            // are no pending wake-ups, `anythingDue` answers false forever, and
+            // the system stops trading in perfect silence: no error, no report,
+            // nothing to notice. `schedule` collapses duplicates, so booking it
+            // again when the cycle already did costs nothing.
+            await bookTheDayBoundary(new Date());
           }
         } catch (error) {
           log.error("scheduled tick failed", { error: errorMessage(error) });
